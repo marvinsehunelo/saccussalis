@@ -1,0 +1,46 @@
+saccussalis/
+│
+├── backend/                  # CORE BANKING PHP API (Excellent structure!)
+│   ├── auth/
+│   ├── accounts/
+│   ├── wallet/
+│   ├── transactions/
+│   └── admin  
+     db.php
+     .htaccess 
+│
+├── frontend/               
+│   ├── public/             # Marketing site
+│   │   ├── index.php
+│   │   └── login.php       # Marketing login (only links/redirects to the SPA login below)
+│   │
+│   └── ibanking/           # CORE BANKING SPA (The modern approach)
+│       ├── index.php         # <--- THE SINGLE ENTRY POINT (Loads the entire JS application)
+│       ├── src/              # <--- All your React/Angular/Vue source components go here
+│       │   ├── components/   # E.g., Card, Button, Navbar
+│       │   └── pages/        # E.g., DashboardPage.jsx, AccountsPage.jsx, WalletPage.jsx
+│       └── package.json      # Defines the JavaScript dependencies
+│       dashboard folder(inside frontend)
+        admin folder (inside frontend ) 
+   
+├── database/
+│   └── ...
+│
+└── README.md
+
+front end 
+src/
+├── components/        # Reusable UI components
+│   ├── Header.jsx
+│   └── Card.jsx
+│
+├── pages/             # Each page gets its own file
+│   ├── LoginPage.jsx
+│   ├── DashboardPage.jsx
+│   ├── WalletPage.jsx
+│   └── AdminPage.jsx
+│
+├── services/          # API service functions
+│   └── api.js
+│
+└── App.jsx            # Only handles routing & layout

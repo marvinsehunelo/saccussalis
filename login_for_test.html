@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Admin Adjust Balance Test</title>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: "Playfair Display", serif;
+    background: #f9f9f9;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 100vh;
+  }
+
+  h2 {
+    margin-top: 40px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  .card {
+    background: #fff;
+    padding: 25px 30px;
+    border-radius: 12px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+    width: 100%;
+    max-width: 380px;
+    text-align: center;
+    margin-top: 25px;
+  }
+
+  input, select {
+    width: 100%;
+    padding: 10px;
+    margin: 8px 0 15px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+
+  button {
+    background: black;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  button:hover {
+    background: #333;
+  }
+
+  #adjustModal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    justify-content: center;
+    align-items: center;
+    z-index: 10;
+  }
+
+  #adjustModal .card {
+    width: 320px;
+    text-align: left;
+  }
+
+  #adjustModal label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    display: block;
+    margin-bottom: 5px;
+  }
+
+  #adjustModal .actions {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+  }
+
+  #adjustMsg {
+    font-size: 13px;
+    text-align: center;
+    color: #444;
+    margin-top: 10px;
+  }
+
+  #toast {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: black;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+    display: none;
+    z-index: 20;
+  }
+</style>
+</head>
+<body>
+
+<h2>Admin Balance Adjustment Test</h2>
+
+<!-- Login -->
+<div class="card" id="loginBox">
+  <h3>Login</h3>
+  <input id="email" placeholder="Email" type="email" />
+  <input id="password" placeholder="Password" type="password" />
+  <button onclick="login()">Login</button>
+  <p id="loginMsg"></p>
+</div>
+
+<!-- Search user -->
+<div class="card" id="searchBox" style="display:none;">
+  <h3>Search User</h3>
+  <input id="searchEmail" placeholder="User email" type="email" />
+  <button onclick="fetchUser()">Fetch User</button>
+  <p id="userInfo"></p>
+  <button onclick="openAdjustModal()">Adjust Balance</button>
+</div>
+
+<!-- Adjust balance modal -->
+<div id="adjustModal">
+  <div class="card">
+    <h3 style="text-align:center;">Adjust Balance</h3>
+    <label for="balAccount">Select Account</label>
+    <select id="balAccount"></select>
+
+    <label for="balType">Type</label>
+    <select id="balType">
+      <option value="credit">Credit (+)</option>
+      <option value="debit">Debit (-)</option>
+    </select>
+
+    <label for="balAmount">Amount</label>
+    <input id="balAmount" type="number" placeholder="Enter amount" />
+
+    <div class="actions">
+      <button id="confirmAdjust">Apply</button>
+      <button onclick="closeAdjustModal()" style="background:#999;">Cancel</button>
+    </div>
+
+    <p id="adjustMsg"></p>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+const API_ADMIN_ROOT = 'http://localhost/saccussalisbank/backend/admin/';
+const API_AUTH_ROOT = 'http://localhost/saccussalisbank/backend/auth/';
+let token = '';
+let selectedUser = null;
+
+async function login() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value.trim();
+  const msg = document.getElementById('loginMsg');
+
+  const res = await fetch(API_AUTH_ROOT + 'admin_login.php', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ email, password })
+  });
+  const j = await res.json();
+  if (j.status === 'success') {
+    token = j.token;
+    msg.textContent = 'Login successful!';
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('searchBox').style.display = 'block';
+  } else {
+    msg.textContent = j.message;
+  }
+}
+
+async function fetchUser() {
+  const email = document.getElementById('searchEmail').value.trim();
+  const info = document.getElementById('userInfo');
+  info.textContent = 'Searching...';
+
+  const res = await fetch(API_ADMIN_ROOT + 'admin_get_users.php', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: JSON.stringify({ email })
+  });
+
+  const j = await res.json();
+  if (j.status === 'success') {
+    selectedUser = j.user;
+    info.textContent = 'User: ' + j.user.full_name + ' (' + j.user.email + ')';
+
+    const sel = document.getElementById('balAccount');
+    sel.innerHTML = '';
+    if (j.user.accounts && j.user.accounts.length > 0) {
+      j.user.accounts.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.account_id;
+        opt.textContent = a.type + ' — Balance: ' + a.balance;
+        sel.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement('option');
+      opt.textContent = 'No accounts found';
+      sel.appendChild(opt);
+    }
+  } else {
+    info.textContent = j.message;
+  }
+}
+
+function openAdjustModal() {
+  document.getElementById('adjustModal').style.display = 'flex';
+}
+
+function closeAdjustModal() {
+  document.getElementById('adjustModal').style.display = 'none';
+}
+
+function showToast(msgText) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msgText;
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+
+document.getElementById('confirmAdjust').onclick = async () => {
+  const account_id = document.getElementById('balAccount').value;
+  const type = document.getElementById('balType').value;
+  const amount = document.getElementById('balAmount').value;
+  const msg = document.getElementById('adjustMsg');
+
+  msg.textContent = 'Processing...';
+
+  const res = await fetch(API_ADMIN_ROOT + 'admin_adjust_balance.php', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: JSON.stringify({ account_id, amount, type })
+  });
+
+  const j = await res.json();
+  if (j.status === 'success') {
+    msg.textContent = 'Balance updated successfully!';
+    showToast('✅ Balance updated for ' + selectedUser.full_name);
+    setTimeout(() => {
+      closeAdjustModal();
+      msg.textContent = '';
+      document.getElementById('balAmount').value = '';
+    }, 1500);
+  } else {
+    msg.textContent = j.message;
+  }
+};
+</script>
+
+</body>
+</html>

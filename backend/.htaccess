@@ -1,0 +1,21 @@
+# Enable rewrite engine for clean URLs and RESTful API routes
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+</IfModule>
+
+# Allow all HTTP request methods (important for REST APIs)
+<Limit GET POST PUT DELETE OPTIONS>
+    Require all granted
+</Limit>
+
+# Ensure PHP handles all request types
+<FilesMatch "\.php$">
+    SetHandler application/x-httpd-php
+</FilesMatch>
+
+# Optional (recommended) — CORS headers for your frontend to call backend
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
+</IfModule>

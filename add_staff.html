@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Add Staff Test</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; }
+label { font-weight: bold; display: block; margin-top: 10px; }
+input, button { margin: 5px 0; padding: 8px; width: 250px; }
+button { cursor: pointer; }
+#loginResult, #staffResult { margin-top: 10px; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h2>Login</h2>
+<label for="email">Email:</label>
+<input type="email" id="email" placeholder="Email"><br>
+
+<label for="password">Password:</label>
+<input type="password" id="password" placeholder="Password"><br>
+
+<button onclick="login()">Login</button>
+<p id="loginResult"></p>
+
+<hr>
+
+<h2>Add Staff</h2>
+
+<label for="name">Full Name:</label>
+<input type="text" id="name" placeholder="Full Name"><br>
+
+<label for="staffEmail">Email:</label>
+<input type="email" id="staffEmail" placeholder="Email"><br>
+
+<label for="staffPhone">Phone (optional):</label>
+<input type="text" id="staffPhone" placeholder="Phone"><br>
+
+<label for="staffPass">Password:</label>
+<input type="password" id="staffPass" placeholder="Password"><br>
+
+<label for="role">Role:</label>
+<input type="text" id="role" placeholder="Role"><br><br>
+
+<button onclick="addStaff()">Add Staff</button>
+<p id="staffResult"></p>
+
+<script>
+const API_ROOT = 'http://localhost/saccussalisbank/backend/auth';
+
+async function login() {
+    const payload = {
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value
+    };
+    try {
+        const res = await fetch(`${API_ROOT}/login.php`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        const el = document.getElementById('loginResult');
+        if(j.status === 'success'){
+            el.textContent = 'Login successful! Role: ' + j.user.role;
+            el.style.color = 'green';
+            localStorage.setItem('token', j.token);
+        } else {
+            el.textContent = j.message;
+            el.style.color = 'red';
+        }
+    } catch(e) {
+        console.error(e);
+        const el = document.getElementById('loginResult');
+        el.textContent = 'Network error';
+        el.style.color = 'red';
+    }
+}
+
+async function addStaff() {
+    const token = localStorage.getItem('token');
+    if(!token){
+        alert('You must login first!');
+        return;
+    }
+
+    const payload = {
+        name: document.getElementById('name').value,
+        email: document.getElementById('staffEmail').value,
+        phone: document.getElementById('staffPhone').value.trim(),
+        password: document.getElementById('staffPass').value,
+        role: document.getElementById('role').value.toLowerCase()
+    };
+
+    try {
+        const res = await fetch(`${API_ROOT}/add_staff.php`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        const el = document.getElementById('staffResult');
+        el.textContent = j.message;
+        el.style.color = j.status === 'success' ? 'green' : 'red';
+    } catch(e) {
+        console.error(e);
+        const el = document.getElementById('staffResult');
+        el.textContent = 'Network error';
+        el.style.color = 'red';
+    }
+}
+</script>
+
+</body>
+</html>

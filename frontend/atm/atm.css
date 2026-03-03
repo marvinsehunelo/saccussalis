@@ -1,0 +1,14 @@
+body {
+    background: #1b1b1b;
+    font-family: Arial;
+}
+
+.atm-screen {
+    width: 400px;
+    margin: 100px auto;
+    background: #2e2e2e;
+    padding: 20px;
+    color: white;
+    text-align: center;
+    border-radius: 10px;
+}
