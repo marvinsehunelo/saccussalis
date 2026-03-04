@@ -1,38 +1,27 @@
 <?php
-// db.php - PostgreSQL Database connection (PDO) for Railway
+// db.php - Robust version with error logging
+error_log("Loading db.php");
 
-// Use Railway environment variables with fallbacks for local development
-$host = getenv('PGHOST') ?: 'localhost';
+$host = getenv('PGHOST') ?: 'postgres.railway.internal';
 $port = getenv('PGPORT') ?: '5432';
-$dbname = getenv('PGDATABASE') ?: 'saccussalis';
-$username = getenv('PGUSER') ?: 'swap_admin';
-$password = getenv('PGPASSWORD') ?: 'StrongPassword!';
+$dbname = getenv('PGDATABASE') ?: 'railway';
+$user = getenv('PGUSER') ?: 'postgres';
+$pass = getenv('PGPASSWORD') ?: 'jFLFngTLWgRirZVEsoDsyQhTGRtSImjY';
 
-// Optional: Log connection attempt (remove in production)
-error_log("Connecting to database: host=$host, port=$port, dbname=$dbname, user=$username");
+error_log("Connecting to: $host:$port/$dbname as $user");
 
 try {
-    // PostgreSQL DSN
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
-    
-    $pdo = new PDO($dsn, $username, $password, [
+    $pdo = new PDO($dsn, $user, $pass, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_TIMEOUT => 5
     ]);
-    
-    // Optional: Test the connection
-    $pdo->query("SELECT 1");
-    
+    error_log("Database connected successfully");
 } catch (PDOException $e) {
-    // Log the error but don't expose details to client in production
     error_log("Database connection failed: " . $e->getMessage());
-    
     http_response_code(500);
-    echo json_encode([
-        "error" => "Database connection failed",
-        "message" => "Unable to connect to database. Please try again later."
-    ]);
+    echo json_encode(["error" => "Database connection failed"]);
     exit;
 }
 ?>
