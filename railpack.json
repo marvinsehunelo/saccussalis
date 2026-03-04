@@ -5,6 +5,6 @@
     "extensions": ["pdo_pgsql", "pgsql", "gd", "mbstring", "xml"]
   },
   "deploy": {
-    "startCommand": "php -S 0.0.0.0:${PORT:-8080} -t backend"
+    "startCommand": "php -S 0.0.0.0:${PORT:-8080} -t ."
   }
 }
