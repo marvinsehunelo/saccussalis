@@ -14,6 +14,6 @@
   },
   "runtimes": ["postgresql"],
   "deploy": {
-    "startCommand": "php -S 0.0.0.0:${PORT:-8080} -t public"
+    "startCommand": "php -S 0.0.0.0:${PORT:-8080} -t ."
   }
 }
