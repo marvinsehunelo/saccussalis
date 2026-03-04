@@ -4,6 +4,14 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once("../db.php");
+if (!$pdo instanceof PDO) {
+    http_response_code(500);
+    echo json_encode([
+        "status" => "error",
+        "message" => "Database connection unavailable"
+    ]);
+    exit;
+}
 header("Content-Type: application/json");
 
 // CRITICAL: Check if database connected
@@ -107,3 +115,4 @@ try {
     ]);
 }
 ?>
+
