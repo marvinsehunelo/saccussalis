@@ -3,20 +3,23 @@ require_once(__DIR__ . "/../includes/secure_api_header.php"); // $pdo, $user_id
 require_once(__DIR__ . "/../includes/cazacom_db.php"); // $cazacom_pdo
 header("Content-Type: application/json; charset=utf-8");
 
+// Check if Cazacom DB is connected
+$cazacom_available = isset($cazacom_pdo) && $cazacom_pdo !== null;
+if (!$cazacom_available) {
+    error_log("Cazacom DB not available - proceeding with main DB only");
+}
+
 // --- Input ---
 $data = json_decode(file_get_contents("php://input"), true);
 $recipient_phone = trim($data['recipient_phone'] ?? '');
 $amount = floatval($data['amount'] ?? 0);
 $from_account_type = $data['from_account_type'] ?? null;
-$notes = trim($data['notes'] ?? null); // optional
+$notes = trim($data['notes'] ?? ''); // optional
 
 if (empty($recipient_phone) || $amount <= 0 || empty($from_account_type)) {
     echo json_encode(["status" => "error", "message" => "Recipient phone, valid amount, and account type are required"]);
     exit;
 }
-
-// --- Normalize phone number (optional) ---
-// $recipient_phone = normalizePhone($recipient_phone);
 
 // --- Get sender account ---
 $stmt = $pdo->prepare("
@@ -87,7 +90,9 @@ if (!$sender_phone) {
 
 // --- Begin transactions ---
 $pdo->beginTransaction();
-$cazacom_pdo->beginTransaction();
+if ($cazacom_available) {
+    $cazacom_pdo->beginTransaction();
+}
 
 try {
     // Deduct from sender
@@ -134,30 +139,37 @@ try {
     ");
     $stmt->execute([$transaction_id, $recipient_phone, $user_id, $pin, $sender_phone, $amount]);
 
-    // Update Cazacom wallet
-    $stmt = $cazacom_pdo->prepare("SELECT id FROM users WHERE phone_number = ? LIMIT 1");
-    $stmt->execute([$recipient_phone]);
-    $c_user_id = $stmt->fetchColumn();
-    if ($c_user_id) {
-        $stmt = $cazacom_pdo->prepare("UPDATE wallets SET saccus_ewallet_balance = saccus_ewallet_balance + ? WHERE user_id=?");
-        $stmt->execute([$amount, $c_user_id]);
+    // Update Cazacom wallet (only if available)
+    if ($cazacom_available) {
+        $stmt = $cazacom_pdo->prepare("SELECT id FROM users WHERE phone_number = ? LIMIT 1");
+        $stmt->execute([$recipient_phone]);
+        $c_user_id = $stmt->fetchColumn();
+        if ($c_user_id) {
+            $stmt = $cazacom_pdo->prepare("UPDATE wallets SET saccus_ewallet_balance = saccus_ewallet_balance + ? WHERE user_id=?");
+            $stmt->execute([$amount, $c_user_id]);
+        }
+
+        // SMS notifications with direction
+        $sms_stmt = $cazacom_pdo->prepare("
+            INSERT INTO sms (user_id, target_number, sender_number, message, cost, direction)
+            VALUES ((SELECT id FROM users WHERE phone_number=? LIMIT 1), ?, ?, ?, 0, ?)
+        ");
+        $sms_stmt->execute([$recipient_phone, $recipient_phone, $sender_phone, "You received P$amount via eWallet. PIN: $pin", 'in']);
+        $sms_stmt->execute([$sender_phone, $sender_phone, $sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone", 'out']);
+    } else {
+        // Log that SMS wasn't sent
+        error_log("Cazacom DB not available - SMS notifications skipped for transaction $transaction_id");
     }
 
-    // SMS notifications with direction
-    $sms_stmt = $cazacom_pdo->prepare("
-        INSERT INTO sms (user_id, target_number, sender_number, message, cost, direction)
-        VALUES ((SELECT id FROM users WHERE phone_number=? LIMIT 1), ?, ?, ?, 0, ?)
-    ");
-    $sms_stmt->execute([$recipient_phone, $recipient_phone, $sender_phone, "You received P$amount via eWallet. PIN: $pin", 'in']);
-    $sms_stmt->execute([$sender_phone, $sender_phone, $sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone", 'out']);
-
-    // Commit
+    // Commit transactions
     $pdo->commit();
-    $cazacom_pdo->commit();
+    if ($cazacom_available) {
+        $cazacom_pdo->commit();
+    }
 
     echo json_encode([
         "status" => "success",
-        "message" => "eWallet transfer successful",
+        "message" => "eWallet transfer successful" . ($cazacom_available ? "" : " (SMS notifications skipped)"),
         "transaction_id" => $transaction_id,
         "recipient_phone" => $recipient_phone,
         "pin" => $pin
@@ -165,8 +177,10 @@ try {
 
 } catch (Exception $e) {
     $pdo->rollBack();
-    $cazacom_pdo->rollBack();
+    if ($cazacom_available) {
+        $cazacom_pdo->rollBack();
+    }
     error_log("eWallet Transfer Failed: " . $e->getMessage());
     echo json_encode(["status" => "error", "message" => "Transfer failed: " . $e->getMessage()]);
 }
-
+?>
