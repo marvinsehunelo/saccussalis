@@ -2,7 +2,7 @@
   "$schema": "https://schema.railpack.com",
   "provider": "php",
   "php": {
-    "extensions": ["pdo_pgsql", "pgsql", "gd", "mbstring", "xml"]
+    "extensions": ["pdo", "pdo_pgsql", "pgsql", "gd", "mbstring", "xml"]
   },
   "deploy": {
     "startCommand": "php -S 0.0.0.0:${PORT:-8080} -t ."
