@@ -6,8 +6,27 @@ if (session_status() === PHP_SESSION_NONE) {
 require_once("../db.php");
 header("Content-Type: application/json");
 
+// CRITICAL: Check if database connected
+if (!isset($pdo) || !$pdo) {
+    http_response_code(500);
+    echo json_encode([
+        "status" => "error",
+        "message" => "Database connection unavailable"
+    ]);
+    exit;
+}
+
 // Enable PDO exceptions
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+try {
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode([
+        "status" => "error",
+        "message" => "Failed to configure database"
+    ]);
+    exit;
+}
 
 $data = json_decode(file_get_contents("php://input"), true);
 
@@ -15,11 +34,15 @@ $email = trim($data['email'] ?? '');
 $password = $data['password'] ?? '';
 
 if (!$email || !$password) {
+    http_response_code(400);
     echo json_encode(["status" => "error", "message" => "Email and password required"]);
     exit;
 }
 
 try {
+    // Test query to verify connection works
+    $pdo->query("SELECT 1");
+    
     // Fetch user by email
     $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
     $stmt->execute([$email]);
@@ -59,13 +82,11 @@ try {
         ':expires_at' => $expires_at
     ]);
 
-    // Check if session row was inserted
     $sessionId = $stmtToken->fetchColumn();
     if (!$sessionId) {
         throw new Exception("Failed to create session");
     }
 
-    // Set PHP session variables
     $_SESSION['user_id'] = $user['user_id'];
     $_SESSION['user_name'] = $user['full_name'];
     $_SESSION['authToken'] = $token;
@@ -78,10 +99,11 @@ try {
     ]);
 
 } catch (Exception $e) {
-    http_response_code(400);
+    error_log("Login error: " . $e->getMessage());
+    http_response_code(401);
     echo json_encode([
         "status" => "error",
-        "message" => "Login failed: " . $e->getMessage()
+        "message" => "Login failed: Invalid credentials"
     ]);
 }
-
+?>
