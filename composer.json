@@ -1,0 +1,13 @@
+{
+    "name": "saccussalis/app",
+    "description": "Saccus Salis Banking Application",
+    "type": "project",
+    "require": {
+        "tecnickcom/tcpdf": "^6.10"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "backend/"
+        }
+    }
+}

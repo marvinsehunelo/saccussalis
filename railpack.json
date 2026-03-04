@@ -9,7 +9,9 @@
       "gd",
       "mbstring",
       "xml",
-      "json"
+      "json",
+      "session",
+      "zip"
     ]
   },
   "runtimes": ["postgresql"],
