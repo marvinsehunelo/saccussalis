@@ -1,0 +1,14 @@
+[phpexensions]
+extensions = [
+  "pdo_pgsql",
+  "pgsql",
+  "gd",
+  "mbstring",
+  "xml",
+  "json",
+  "session",
+  "zip"
+]
+
+[start]
+cmd = "php -S 0.0.0.0:${PORT:-8080} -t ."
