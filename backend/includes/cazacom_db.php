@@ -1,73 +1,47 @@
 <?php
-// backend/includes/cazacom_db.php - Using CazaCom's pattern
+// backend/includes/cazacom_db.php - Railway compatible version
 
-class CazacomDatabase {
-    private $host;
-    private $port;
-    private $db_name;
-    private $username;
-    private $password;
-    public $conn;
+// Initialize as null
+$cazacom_pdo = null;
 
-    public function __construct() {
-        // Try Cazacom-specific URL first, fall back to main DATABASE_URL
-        $database_url = getenv('CAZACOM_DATABASE_URL') ?: getenv('DATABASE_URL');
-        
-        if ($database_url) {
-            // Parse Railway's DATABASE_URL
-            $db = parse_url($database_url);
-            
-            $this->host = $db['host'] ?? 'localhost';
-            $this->port = $db['port'] ?? '5432';
-            $this->db_name = ltrim($db['path'] ?? '/cazacom', '/');
-            $this->username = $db['user'] ?? 'postgres';
-            $this->password = $db['pass'] ?? '';
-        } else {
-            // Fallback for local development
-            $this->host = getenv('CAZACOM_HOST') ?: 'localhost';
-            $this->port = getenv('CAZACOM_PORT') ?: '5432';
-            $this->db_name = getenv('CAZACOM_DB') ?: 'cazacom';
-            $this->username = getenv('CAZACOM_USER') ?: 'swap_admin';
-            $this->password = getenv('CAZACOM_PASS') ?: 'StrongPassword123!';
-        }
-    }
+// Try Cazacom-specific database URL first, fall back to main DATABASE_URL
+$database_url = getenv('CAZACOM_DATABASE_URL') ?: getenv('DATABASE_URL');
 
-    public function getConnection() {
-        $this->conn = null;
-
-        try {
-            $dsn = "pgsql:host={$this->host};port={$this->port};dbname={$this->db_name}";
-            
-            error_log("Connecting to Cazacom DB: host={$this->host}, port={$this->port}, dbname={$this->db_name}, user={$this->username}");
-            
-            $this->conn = new PDO($dsn, $this->username, $this->password, [
+if ($database_url) {
+    // Parse Railway DATABASE_URL
+    $parts = parse_url($database_url);
+    $host = $parts['host'] ?? null;
+    $port = $parts['port'] ?? 5432;
+    $user = $parts['user'] ?? null;
+    $pass = $parts['pass'] ?? null;
+    $dbname = ltrim($parts['path'] ?? '', '/');
+    
+    error_log("Cazacom DB: Attempting connection to $host:$port/$dbname as $user");
+    
+    try {
+        $cazacom_pdo = new PDO(
+            "pgsql:host=$host;port=$port;dbname=$dbname",
+            $user,
+            $pass,
+            [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_TIMEOUT => 5
-            ]);
-            
-            error_log("Cazacom DB connection successful");
-            
-        } catch (PDOException $exception) {
-            error_log("Cazacom DB connection failed: " . $exception->getMessage());
-            
-            // Don't exit - let calling code handle null connection
-            return null;
-        }
-
-        return $this->conn;
+            ]
+        );
+        error_log("Cazacom DB: Connection successful");
+    } catch (PDOException $e) {
+        error_log("Cazacom DB: Connection failed - " . $e->getMessage());
+        // Don't echo or exit - just let $cazacom_pdo remain null
     }
+} else {
+    error_log("Cazacom DB: No DATABASE_URL found");
 }
 
-// For backward compatibility with existing code
-$cazacom_db = new CazacomDatabase();
-$cazacom_pdo = $cazacom_db->getConnection();
-
 // If this file is run directly for testing
-if (php_sapi_name() === 'cli' && !defined('CONSOLE_MODE')) {
-    define('CONSOLE_MODE', true);
+if (php_sapi_name() === 'cli' && !isset($argv[0]) && !defined('PHPUNIT_RUNNING')) {
     if ($cazacom_pdo) {
-        echo "✅ Cazacom DB connection successful!\n";
+        echo "✅ Cazacom DB connected successfully\n";
     } else {
         echo "❌ Cazacom DB connection failed\n";
     }
