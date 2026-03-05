@@ -10,17 +10,31 @@ header('Content-Type: application/json');
 try {
     $input = json_decode(file_get_contents('php://input'), true);
     
-    $required = ['reference', 'asset_type', 'asset_id', 'amount', 'expiry', 'hold_reason'];
+    // Align required fields with what SwapService sends
+    $required = ['reference', 'asset_type', 'amount', 'expiry', 'hold_reason'];
     foreach ($required as $field) {
         if (!isset($input[$field])) {
             throw new Exception("Missing required field: {$field}");
         }
     }
     
+    // Map ewallet_phone to asset_id for E-WALLET type
+    $assetType = strtoupper($input['asset_type']);
+    $assetId = $input['asset_id'] ?? null;
+    
+    if ($assetType === 'E-WALLET' || $assetType === 'WALLET') {
+        $assetId = $input['ewallet_phone'] ?? $input['wallet_phone'] ?? $input['phone'] ?? $assetId;
+    }
+    
+    if (!$assetId) {
+        throw new Exception("Missing asset identifier");
+    }
+    
     $pdo = getDBConnection();
     $holdService = new HoldService($pdo);
     
-    $holdReference = 'HOLD-' . uniqid() . '-' . rand(1000, 9999);
+    // Use the reference from request as hold reference (no HOLD- prefix)
+    $holdReference = $input['reference'];
     
     // Store hold in database
     $stmt = $pdo->prepare("
@@ -33,8 +47,8 @@ try {
     $stmt->execute([
         $holdReference,
         $input['reference'],
-        $input['asset_type'],
-        $input['asset_id'],
+        $assetType,
+        $assetId,
         $input['amount'],
         $input['expiry'],
         $input['hold_reason']
@@ -43,10 +57,10 @@ try {
     // Call appropriate asset-specific hold method
     $remainingBalance = 0;
     
-    switch (strtoupper($input['asset_type'])) {
+    switch ($assetType) {
         case 'ACCOUNT':
             $remainingBalance = $holdService->holdAccount(
-                $input['asset_id'],
+                $assetId,
                 $input['amount']
             );
             break;
@@ -54,14 +68,14 @@ try {
         case 'E-WALLET':
         case 'WALLET':
             $remainingBalance = $holdService->holdWallet(
-                $input['asset_id'],
+                $assetId,
                 $input['amount']
             );
             break;
             
         case 'CARD':
             $remainingBalance = $holdService->holdCard(
-                $input['asset_id'],
+                $assetId,
                 $input['amount']
             );
             break;
