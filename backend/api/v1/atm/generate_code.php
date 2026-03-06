@@ -2,8 +2,7 @@
 // --------------------------------------------------
 // generate_code.php
 // SAT Instrument Generator for SACCUSSALIS
-// Using existing tables: cash_instruments, sat_tokens
-// Fixed: PIN is 6-digit, not hashed in this column
+// ALIGNED with SwapService expectations
 // --------------------------------------------------
 
 header('Content-Type: application/json');
@@ -20,20 +19,21 @@ function generateSAT(PDO $pdo, array $payload): array
         
         $pdo->beginTransaction();
 
-        // 1️⃣ Validate Input - Map from SwapService payload
-        $phone = trim($payload['beneficiary_phone'] ?? $payload['recipient_phone'] ?? '');
+        // 1️⃣ Validate Input - EXACTLY matching what SwapService sends
+        $phone = trim($payload['beneficiary_phone'] ?? '');
         $amount = floatval($payload['amount'] ?? 0);
         $reference = trim($payload['reference'] ?? '');
         $sourceInstitution = trim($payload['source_institution'] ?? '');
         $sourceHoldReference = trim($payload['source_hold_reference'] ?? '');
         $sourceAssetType = trim($payload['source_asset_type'] ?? '');
+        $codeHash = trim($payload['code_hash'] ?? '');
         
         // Map acquirer network from source_institution
-        $acquirerNetwork = trim($payload['acquirer_network'] ?? $sourceInstitution ?: 'ZURUBANK');
+        $acquirerNetwork = $sourceInstitution ?: 'ZURUBANK';
 
         if ($phone === '' || $amount <= 0) {
             error_log("SACCUSSALIS: Invalid phone or amount - phone: '$phone', amount: $amount");
-            throw new Exception("Invalid recipient_phone or amount");
+            throw new Exception("Invalid beneficiary_phone or amount");
         }
 
         // 2️⃣ Normalize phone (remove + if present for storage)
@@ -41,7 +41,6 @@ function generateSAT(PDO $pdo, array $payload): array
         error_log("SACCUSSALIS: Normalized phone: $normalizedPhone");
 
         // 3️⃣ Find or create user/wallet
-        // First check if user exists with this phone
         $stmt = $pdo->prepare("SELECT user_id FROM users WHERE phone = :phone OR phone = :phone_with_plus");
         $stmt->execute([
             ':phone' => $normalizedPhone,
@@ -133,9 +132,6 @@ function generateSAT(PDO $pdo, array $payload): array
         // 6️⃣ Generate SAT Number (12-digit) + PIN (6-digit)
         $satNumber = str_pad(random_int(0, 999999999999), 12, '0', STR_PAD_LEFT);
         $pin       = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-        
-        // IMPORTANT: pin column is CHAR(6), so we store the plain 6-digit PIN
-        // No hashing for this column - it's meant to store the actual PIN
 
         // 7️⃣ Insert SAT Token
         $stmt = $pdo->prepare("
@@ -149,6 +145,7 @@ function generateSAT(PDO $pdo, array $payload): array
                 expires_at,
                 status,
                 processing,
+                code_hash,
                 created_at
             )
             VALUES (
@@ -161,6 +158,7 @@ function generateSAT(PDO $pdo, array $payload): array
                 :expires_at,
                 'ACTIVE',
                 FALSE,
+                :code_hash,
                 NOW()
             )
             RETURNING sat_id
@@ -169,10 +167,11 @@ function generateSAT(PDO $pdo, array $payload): array
         $stmt->execute([
             ':instrument_id' => $instrumentId,
             ':sat_number'    => $satNumber,
-            ':pin'           => $pin, // Store plain 6-digit PIN, not hashed
+            ':pin'           => $pin,
             ':acquirer_network' => $acquirerNetwork,
             ':amount'        => $amount,
-            ':expires_at'    => $expiresAt
+            ':expires_at'    => $expiresAt,
+            ':code_hash'     => $codeHash
         ]);
 
         $satId = $stmt->fetchColumn();
@@ -204,7 +203,8 @@ function generateSAT(PDO $pdo, array $payload): array
             'instrument_id' => $instrumentId,
             'source_institution' => $sourceInstitution,
             'source_hold_reference' => $sourceHoldReference,
-            'source_asset_type' => $sourceAssetType
+            'source_asset_type' => $sourceAssetType,
+            'code_hash' => $codeHash
         ]);
         
         $stmt->execute([
@@ -221,21 +221,23 @@ function generateSAT(PDO $pdo, array $payload): array
             'success' => true,
             'token_generated' => true,
             'sat_number' => $satNumber,
-            'pin' => $pin, // Return plain PIN for SMS
-            'atm_pin' => $pin, // For compatibility
+            'pin' => $pin,
+            'atm_pin' => $pin,
             'token_reference' => $satNumber,
             'instrument_id' => $instrumentId,
             'sat_id' => $satId,
             'amount' => $amount,
             'currency' => 'BWP',
             'issuer_bank' => 'SACCUS',
-            'acquirer_bank' => $acquirerNetwork,
+            'acquirer_network' => $acquirerNetwork,
             'expires_at' => $expiresAt,
+            'expiry' => $expiresAt,
             'metadata' => [
                 'wallet_id' => $walletId,
                 'user_id' => $userId,
                 'reference' => $reference,
-                'source_institution' => $sourceInstitution
+                'source_institution' => $sourceInstitution,
+                'source_hold_reference' => $sourceHoldReference
             ]
         ];
 
