@@ -975,3 +975,9 @@ VALUES ('MAIN_SETTLEMENT', 'operational', '10000001', 1000000.00)
 ON CONFLICT (account_number) DO NOTHING;
 
 ALTER TABLE financial_holds ALTER COLUMN session_id DROP NOT NULL;
+
+
+INSERT INTO ledger_accounts (account_name, account_number, account_type)
+VALUES
+('ATM Cash Float', 'ATM-001', 'asset'),
+('Customer Wallet Control', 'WALLET-CONTROL', 'liability');
