@@ -1,23 +1,107 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Saccus ATM</title>
     <link rel="stylesheet" href="atm.css">
 </head>
 <body>
+    <div class="atm-shell">
+        <div class="atm-top">
+            <div class="atm-camera"></div>
+            <div class="atm-brand">SACCUS ATM</div>
+        </div>
 
-<div class="atm-screen">
-    <h2>Saccus ATM</h2>
+        <div class="atm-screen">
+            <div class="screen-header">
+                <div class="bank-name">Saccus Salis</div>
+                <div class="screen-time" id="screenTime">--:--:--</div>
+            </div>
 
-    <input type="text" id="userId" placeholder="Enter User ID">
-    <input type="password" id="pin" placeholder="Enter PIN">
-    <input type="number" id="amount" placeholder="Enter Amount">
+            <div class="screen-body">
+                <div class="left-menu">
+                    <button class="side-btn active" data-tab="ewalletTab">Ewallet</button>
+                    <button class="side-btn" data-tab="satTab">SAT</button>
+                </div>
 
-    <button onclick="withdraw()">Withdraw</button>
+                <div class="screen-content">
+                    <div class="welcome">
+                        <h2>Cardless Cash Withdrawal</h2>
+                        <p>Select service and complete transaction.</p>
+                    </div>
 
-    <div id="response"></div>
-</div>
+                    <input type="hidden" id="atm_id" value="1">
 
-<script src="atm.js"></script>
+                    <div id="ewalletTab" class="tab-panel active">
+                        <h3>Ewallet Cashout</h3>
+
+                        <label for="phone">Phone Number</label>
+                        <input type="text" id="phone" placeholder="e.g. 26770000000">
+
+                        <label for="ewallet_pin">PIN</label>
+                        <input type="password" id="ewallet_pin" placeholder="Enter ewallet PIN">
+
+                        <label for="ewallet_amount">Amount</label>
+                        <input type="number" id="ewallet_amount" placeholder="Enter amount" min="1" step="0.01">
+
+                        <div class="quick-amounts">
+                            <button type="button" onclick="setAmount('ewallet_amount', 50)">P50</button>
+                            <button type="button" onclick="setAmount('ewallet_amount', 100)">P100</button>
+                            <button type="button" onclick="setAmount('ewallet_amount', 200)">P200</button>
+                            <button type="button" onclick="setAmount('ewallet_amount', 500)">P500</button>
+                        </div>
+
+                        <button class="action-btn" onclick="cashoutEwallet()">Withdraw Ewallet</button>
+                    </div>
+
+                    <div id="satTab" class="tab-panel">
+                        <h3>SAT Cashout</h3>
+
+                        <label for="sat_number">SAT Number</label>
+                        <input type="text" id="sat_number" placeholder="Enter SAT number">
+
+                        <label for="sat_pin">SAT PIN</label>
+                        <input type="password" id="sat_pin" placeholder="Enter SAT PIN">
+
+                        <label for="sat_amount">Amount</label>
+                        <input type="number" id="sat_amount" placeholder="Enter amount" min="1" step="0.01">
+
+                        <div class="quick-amounts">
+                            <button type="button" onclick="setAmount('sat_amount', 50)">P50</button>
+                            <button type="button" onclick="setAmount('sat_amount', 100)">P100</button>
+                            <button type="button" onclick="setAmount('sat_amount', 200)">P200</button>
+                            <button type="button" onclick="setAmount('sat_amount', 500)">P500</button>
+                        </div>
+
+                        <div class="sat-actions">
+                            <button class="action-btn" onclick="authorizeSAT()">Authorize SAT</button>
+                            <button class="secondary-btn" onclick="completeSAT()">Dispense / Complete</button>
+                        </div>
+
+                        <input type="hidden" id="trace_number">
+                    </div>
+
+                    <div id="responseBox" class="response-box info">
+                        Ready for transaction.
+                    </div>
+                </div>
+
+                <div class="right-menu">
+                    <button class="side-btn ghost">Balance</button>
+                    <button class="side-btn ghost">Mini Stmt</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="atm-bottom">
+            <div class="keypad-area">
+                <div class="card-slot">CARD / TOKEN SLOT</div>
+                <div class="cash-slot">CASH DISPENSER</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="atm.js"></script>
 </body>
 </html>
