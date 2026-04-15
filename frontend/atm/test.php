@@ -6,7 +6,7 @@ echo "===== ATM CASHOUT TEST =====\n\n";
 
 $atmId   = 1;                 // Make sure this ATM exists
 $phone   = '+26770000000';     // Must match ewallet_pins.recipient_phone
-$pin     = '835864';          // Must match stored PIN
+$pin     = '845649';          // Must match stored PIN
 $amount  = 100.00;
 
 $atm = new ATMService();
