@@ -5,8 +5,8 @@ require_once __DIR__ . '/../../backend/atm/ATMService.php';
 echo "===== ATM CASHOUT TEST =====\n\n";
 
 $atmId   = 1;                 // Make sure this ATM exists
-$phone   = '26770000000';     // Must match ewallet_pins.recipient_phone
-$pin     = '123456';          // Must match stored PIN
+$phone   = '+26770000000';     // Must match ewallet_pins.recipient_phone
+$pin     = '835864';          // Must match stored PIN
 $amount  = 100.00;
 
 $atm = new ATMService();
