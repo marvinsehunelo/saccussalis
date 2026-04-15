@@ -1,594 +1,168 @@
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
-
-body {
-    background: linear-gradient(145deg, #0a0a0a 0%, #1a1a2e 100%);
-    font-family: 'Segoe UI', 'Arial', sans-serif;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 20px;
-}
-
-/* ATM Machine Container */
-.atm-container {
-    perspective: 1000px;
-}
-
-.atm-shell {
-    background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
-    border-radius: 30px 30px 20px 20px;
-    padding: 20px 25px 15px 25px;
-    box-shadow: 
-        0 20px 40px rgba(0,0,0,0.5),
-        inset 0 1px 0 rgba(255,255,255,0.1),
-        0 0 0 2px #4a4a4a,
-        0 0 0 5px #1a1a1a;
-    position: relative;
-}
-
-/* Top Bezel */
-.atm-top-bezel {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 10px 15px 10px;
-    border-bottom: 2px solid #4a4a4a;
-    margin-bottom: 20px;
-}
-
-.atm-camera-led {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.camera-lens {
-    width: 10px;
-    height: 10px;
-    background: radial-gradient(circle, #333, #111);
-    border-radius: 50%;
-    border: 1px solid #555;
-}
-
-.led-green {
-    width: 8px;
-    height: 8px;
-    background: #00ff00;
-    border-radius: 50%;
-    box-shadow: 0 0 5px #00ff00;
-    animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 1; }
-}
-
-.atm-branding {
-    text-align: center;
-}
-
-.brand-name {
-    font-size: 24px;
-    font-weight: bold;
-    letter-spacing: 3px;
-    color: #e6b800;
-    text-shadow: 0 0 5px rgba(230,184,0,0.5);
-}
-
-.brand-sub {
-    font-size: 12px;
-    color: #888;
-    display: block;
-}
-
-.atm-speaker {
-    display: flex;
-    gap: 4px;
-}
-
-.speaker-grill {
-    width: 4px;
-    height: 20px;
-    background: #1a1a1a;
-    border-radius: 2px;
-}
-
-/* Screen Area with Function Keys */
-.atm-screen-area {
-    display: flex;
-    gap: 15px;
-    margin-bottom: 20px;
-}
-
-.function-keys {
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    justify-content: center;
-}
-
-.key-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.left-keys .key-row {
-    flex-direction: row;
-}
-
-.right-keys .key-row {
-    flex-direction: row-reverse;
-}
-
-.func-key {
-    width: 45px;
-    height: 35px;
-    background: linear-gradient(145deg, #4a4a4a, #3a3a3a);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #e6b800;
-    font-weight: bold;
-    font-size: 18px;
-    cursor: pointer;
-    box-shadow: 0 3px 0 #1a1a1a;
-    transition: all 0.05s linear;
-}
-
-.func-key:active {
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #1a1a1a;
-}
-
-.key-label {
-    font-size: 10px;
-    color: #aaa;
-    letter-spacing: 0.5px;
-}
-
-/* LCD Screen */
-.atm-screen {
-    background: #0a3d2f;
-    background: linear-gradient(145deg, #0a3d2f, #063020);
-    width: 520px;
-    height: 380px;
-    border-radius: 12px;
-    padding: 15px;
-    box-shadow: 
-        inset 0 0 20px rgba(0,0,0,0.5),
-        0 5px 15px rgba(0,0,0,0.3);
-    display: flex;
-    flex-direction: column;
-    font-family: 'Courier New', monospace;
-}
-
-.screen-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-bottom: 10px;
-    border-bottom: 2px solid #2ecc71;
-    margin-bottom: 15px;
-}
-
-.bank-logo {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.logo-icon {
-    font-size: 20px;
-}
-
-.bank-name {
-    font-size: 14px;
-    font-weight: bold;
-    color: #2ecc71;
-    letter-spacing: 1px;
-}
-
-.screen-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.status-dot {
-    width: 8px;
-    height: 8px;
-    background: #2ecc71;
-    border-radius: 50%;
-    animation: blink 1s infinite;
-}
-
-@keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
-}
-
-.screen-time {
-    font-size: 14px;
-    color: #2ecc71;
-}
-
-.screen-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: 10px;
-    color: #ccffcc;
-}
-
-/* Screen Content Styles */
-.welcome-screen {
-    text-align: center;
-    padding: 30px 20px;
-}
-
-.welcome-screen h2 {
-    font-size: 22px;
-    margin-bottom: 10px;
-    color: #ffcc00;
-}
-
-.welcome-screen p {
-    font-size: 12px;
-    margin-bottom: 30px;
-    color: #88ff88;
-}
-
-.service-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-top: 20px;
-}
-
-.service-btn {
-    background: rgba(46, 204, 113, 0.2);
-    border: 1px solid #2ecc71;
-    padding: 12px;
-    color: #2ecc71;
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.service-btn:hover {
-    background: rgba(46, 204, 113, 0.4);
-}
-
-.input-group {
-    margin-bottom: 20px;
-}
-
-.input-group label {
-    display: block;
-    font-size: 11px;
-    color: #88ff88;
-    margin-bottom: 5px;
-    letter-spacing: 1px;
-}
-
-.input-field {
-    width: 100%;
-    background: #1a3a2f;
-    border: 1px solid #2ecc71;
-    padding: 10px;
-    color: #fff;
-    font-size: 18px;
-    font-family: monospace;
-    border-radius: 4px;
-}
-
-.input-field:focus {
-    outline: none;
-    border-color: #ffcc00;
-    box-shadow: 0 0 5px #ffcc00;
-}
-
-.quick-amounts {
-    display: flex;
-    gap: 10px;
-    margin: 15px 0;
-    flex-wrap: wrap;
-}
-
-.quick-amount-btn {
-    background: #2a4a3a;
-    border: 1px solid #2ecc71;
-    padding: 8px 15px;
-    color: #2ecc71;
-    cursor: pointer;
-    font-size: 14px;
-    transition: all 0.2s;
-}
-
-.quick-amount-btn:hover {
-    background: #2ecc71;
-    color: #0a3d2f;
-}
-
-.action-buttons {
-    display: flex;
-    gap: 10px;
-    margin-top: 20px;
-}
-
-.action-btn {
-    flex: 1;
-    background: #2ecc71;
-    border: none;
-    padding: 12px;
-    color: #0a3d2f;
-    font-weight: bold;
-    cursor: pointer;
-    font-size: 14px;
-    transition: all 0.2s;
-}
-
-.action-btn:hover {
-    background: #27ae60;
-    transform: scale(0.98);
-}
-
-.secondary-btn {
-    background: #e67e22;
-}
-
-.secondary-btn:hover {
-    background: #d35400;
-}
-
-.response-message {
-    margin-top: 20px;
-    padding: 10px;
-    background: rgba(0,0,0,0.5);
-    border-left: 3px solid #2ecc71;
-    font-size: 11px;
-}
-
-.response-message.error {
-    border-left-color: #e74c3c;
-    color: #ff8888;
-}
-
-.response-message.success {
-    border-left-color: #2ecc71;
-    color: #88ff88;
-}
-
-.screen-footer {
-    padding-top: 10px;
-    border-top: 1px solid #2ecc71;
-    margin-top: 10px;
-}
-
-.footer-message {
-    font-size: 9px;
-    color: #2ecc71;
-    text-align: center;
-    letter-spacing: 1px;
-}
-
-/* Keypad Area */
-.atm-keypad-area {
-    display: flex;
-    gap: 20px;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.card-reader, .cash-dispenser {
-    flex: 1;
-    background: #1a1a1a;
-    border-radius: 10px;
-    padding: 12px;
-    text-align: center;
-}
-
-.card-slot, .dispenser-slot {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    color: #666;
-    font-size: 10px;
-}
-
-.slot-icon, .dispenser-icon {
-    font-size: 20px;
-}
-
-.card-reader-led, .dispenser-led {
-    width: 6px;
-    height: 6px;
-    background: #00ff00;
-    border-radius: 50%;
-    margin-top: 8px;
-    animation: pulse 2s infinite;
-}
-
-.keypad {
-    background: #2a2a2a;
-    padding: 15px;
-    border-radius: 15px;
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5), 0 2px 5px rgba(0,0,0,0.3);
-}
-
-.keypad-row {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 10px;
-    justify-content: center;
-}
-
-.keypad-btn {
-    width: 55px;
-    height: 45px;
-    background: linear-gradient(145deg, #3a3a3a, #2a2a2a);
-    border: none;
-    border-radius: 8px;
-    color: white;
-    font-size: 20px;
-    font-weight: bold;
-    cursor: pointer;
-    box-shadow: 0 3px 0 #1a1a1a;
-    transition: all 0.05s linear;
-}
-
-.keypad-btn:active {
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #1a1a1a;
-}
-
-.clear-btn {
-    background: linear-gradient(145deg, #8b0000, #5c0000);
-    color: #ff8888;
-}
-
-.enter-btn {
-    background: linear-gradient(145deg, #006400, #004400);
-    color: #88ff88;
-}
-
-/* Bottom Strip */
-.atm-bottom-strip {
-    margin-top: 20px;
-    padding-top: 15px;
-    border-top: 1px solid #4a4a4a;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.receipt-printer {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #666;
-    font-size: 10px;
-}
-
-.atm-footer-text {
-    font-size: 9px;
-    color: #555;
-}
-
-/* Modal */
-.modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0,0,0,0.8);
-    z-index: 1000;
-    justify-content: center;
-    align-items: center;
-}
-
-.modal-content {
-    background: #0a3d2f;
-    padding: 30px;
-    border-radius: 15px;
-    text-align: center;
-    max-width: 350px;
-    border: 2px solid #2ecc71;
-}
-
-.modal-icon {
-    font-size: 50px;
-    margin-bottom: 15px;
-}
-
-.modal-title {
-    font-size: 22px;
-    color: #2ecc71;
-    margin-bottom: 10px;
-}
-
-.modal-message {
-    color: #ccffcc;
-    margin-bottom: 15px;
-}
-
-.modal-amount {
-    font-size: 28px;
-    color: #ffcc00;
-    margin-bottom: 20px;
-}
-
-.modal-btn {
-    background: #2ecc71;
-    border: none;
-    padding: 12px 25px;
-    color: #0a3d2f;
-    font-weight: bold;
-    cursor: pointer;
-    border-radius: 5px;
-}
-
-/* Loading Overlay */
-.loading-overlay {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0,0,0,0.9);
-    z-index: 1001;
-    justify-content: center;
-    align-items: center;
-    flex-direction: column;
-}
-
-.spinner {
-    width: 50px;
-    height: 50px;
-    border: 4px solid #2ecc71;
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-.loading-text {
-    color: #2ecc71;
-    margin-top: 20px;
-    font-size: 18px;
-    letter-spacing: 2px;
-}
-
-.loading-sub {
-    color: #888;
-    margin-top: 10px;
-    font-size: 11px;
-}
-
-/* Scrollbar */
-.screen-content::-webkit-scrollbar {
-    width: 5px;
-}
-
-.screen-content::-webkit-scrollbar-track {
-    background: #1a3a2f;
-}
-
-.screen-content::-webkit-scrollbar-thumb {
-    background: #2ecc71;
-    border-radius: 3px;
-}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Saccus ATM - Cardless Cash Withdrawal</title>
+    <link rel="stylesheet" href="atm.css">
+</head>
+<body>
+    <div class="atm-container">
+        <!-- ATM Machine Shell -->
+        <div class="atm-shell">
+            <!-- Top Bezel with Camera and Brand -->
+            <div class="atm-top-bezel">
+                <div class="atm-camera-led">
+                    <div class="camera-lens"></div>
+                    <div class="led-green"></div>
+                </div>
+                <div class="atm-branding">
+                    <span class="brand-name">SACCUS</span>
+                    <span class="brand-sub">ATM</span>
+                </div>
+                <div class="atm-speaker">
+                    <div class="speaker-grill"></div>
+                    <div class="speaker-grill"></div>
+                    <div class="speaker-grill"></div>
+                </div>
+            </div>
+
+            <!-- Main Screen Area -->
+            <div class="atm-screen-area">
+                <!-- Left Function Keys (Physical buttons mapped to screen) -->
+                <div class="function-keys left-keys">
+                    <div class="key-row">
+                        <div class="func-key" data-action="balance">◀</div>
+                        <div class="key-label">BALANCE</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="func-key" data-action="statement">◀</div>
+                        <div class="key-label">MINI STMT</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="func-key" data-action="transfer">◀</div>
+                        <div class="key-label">TRANSFER</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="func-key" data-action="deposit">◀</div>
+                        <div class="key-label">DEPOSIT</div>
+                    </div>
+                </div>
+
+                <!-- LCD Screen -->
+                <div class="atm-screen">
+                    <div class="screen-header">
+                        <div class="bank-logo">
+                            <span class="logo-icon">🏦</span>
+                            <span class="bank-name">SACCUS SALIS</span>
+                        </div>
+                        <div class="screen-status">
+                            <span class="status-dot"></span>
+                            <span id="screenTime" class="screen-time">--:--</span>
+                        </div>
+                    </div>
+
+                    <div class="screen-content" id="screenContent">
+                        <!-- Dynamic content loaded via JavaScript -->
+                    </div>
+
+                    <div class="screen-footer">
+                        <div class="footer-message" id="footerMessage">INSERT CARD OR SELECT SERVICE</div>
+                    </div>
+                </div>
+
+                <!-- Right Function Keys -->
+                <div class="function-keys right-keys">
+                    <div class="key-row">
+                        <div class="key-label">CANCEL</div>
+                        <div class="func-key" data-action="cancel">►</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="key-label">CLEAR</div>
+                        <div class="func-key" data-action="clear">►</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="key-label">ENTER</div>
+                        <div class="func-key" data-action="enter">►</div>
+                    </div>
+                    <div class="key-row">
+                        <div class="key-label">BACK</div>
+                        <div class="func-key" data-action="back">►</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PIN Pad / Keypad Area -->
+            <div class="atm-keypad-area">
+                <div class="card-reader">
+                    <div class="card-slot">
+                        <div class="slot-icon">💳</div>
+                        <span>CARD / TOKEN SLOT</span>
+                    </div>
+                    <div class="card-reader-led"></div>
+                </div>
+                
+                <div class="keypad">
+                    <div class="keypad-row">
+                        <button class="keypad-btn" data-key="1">1</button>
+                        <button class="keypad-btn" data-key="2">2</button>
+                        <button class="keypad-btn" data-key="3">3</button>
+                    </div>
+                    <div class="keypad-row">
+                        <button class="keypad-btn" data-key="4">4</button>
+                        <button class="keypad-btn" data-key="5">5</button>
+                        <button class="keypad-btn" data-key="6">6</button>
+                    </div>
+                    <div class="keypad-row">
+                        <button class="keypad-btn" data-key="7">7</button>
+                        <button class="keypad-btn" data-key="8">8</button>
+                        <button class="keypad-btn" data-key="9">9</button>
+                    </div>
+                    <div class="keypad-row">
+                        <button class="keypad-btn clear-btn" data-key="clear">C</button>
+                        <button class="keypad-btn" data-key="0">0</button>
+                        <button class="keypad-btn enter-btn" data-key="enter">↵</button>
+                    </div>
+                </div>
+                
+                <div class="cash-dispenser">
+                    <div class="dispenser-slot">
+                        <div class="dispenser-icon">💵</div>
+                        <span>CASH DISPENSER</span>
+                    </div>
+                    <div class="dispenser-led"></div>
+                </div>
+            </div>
+
+            <!-- Bottom Receipt Printer -->
+            <div class="atm-bottom-strip">
+                <div class="receipt-printer">
+                    <div class="printer-icon">📄</div>
+                    <span>RECEIPT PRINTER</span>
+                </div>
+                <div class="atm-footer-text">24/7 SERVICE | SECURE TRANSACTIONS</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success/Error Modal -->
+    <div class="modal" id="transactionModal">
+        <div class="modal-content">
+            <div class="modal-icon" id="modalIcon">✅</div>
+            <div class="modal-title" id="modalTitle">Transaction Complete</div>
+            <div class="modal-message" id="modalMessage">Please take your cash and receipt</div>
+            <div class="modal-amount" id="modalAmount"></div>
+            <button class="modal-btn" onclick="closeModal()">Take Cash →</button>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="loading-text">PROCESSING...</div>
+        <div class="loading-sub">Please do not remove your card</div>
+    </div>
+
+    <script src="atm.js"></script>
+</body>
+</html>
