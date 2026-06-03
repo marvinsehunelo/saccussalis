@@ -1,19 +1,19 @@
 <?php
-// Saccussalis GitHub Repository File Lister
-// Usage: https://yourdomain.com/saccussalis-filelist.php
+// GitHub Repository File Lister - PHP 7.x Compatible
+// Usage: https://yourdomain.com/filelist.php?repo=marvinsehunelo/CazaCom&path=backend/public
 
 header('Content-Type: text/html; charset=utf-8');
 
-$repo = 'marvinsehunelo/Saccussalis';
-$path = $_GET['path'] ?? '';
-$branch = $_GET['branch'] ?? 'main';
+$repo = isset($_GET['repo']) ? $_GET['repo'] : 'marvinsehunelo/CazaCom';
+$path = isset($_GET['path']) ? $_GET['path'] : '';
+$branch = isset($_GET['branch']) ? $_GET['branch'] : 'main';
 
 $apiUrl = "https://api.github.com/repos/{$repo}/contents/{$path}?ref={$branch}";
 
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $apiUrl);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_USERAGENT, 'Saccussalis-FileLister/1.0');
+curl_setopt($ch, CURLOPT_USERAGENT, 'CazaCom-FileLister/1.0');
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Accept: application/vnd.github.v3+json'
 ]);
@@ -35,7 +35,7 @@ echo "<!DOCTYPE html>
 <html>
 <head>
     <meta charset='UTF-8'>
-    <title>Saccussalis - File Lister</title>
+    <title>GitHub File Lister - {$repo}</title>
     <style>
         body {
             background: #0d1117;
@@ -110,21 +110,22 @@ echo "<!DOCTYPE html>
     </style>
 </head>
 <body>
-    <h1>🏦 Saccussalis Repository</h1>
+    <h1>📁 GitHub Repository Files</h1>
     <div class='repo-info'>
         <strong>Repository:</strong> {$repo}<br>
         <strong>Branch:</strong> {$branch}<br>
-        <strong>Path:</strong> <span class='path'>{$path ?: '/'}</span>
+        <strong>Path:</strong> <span class='path'>" . ($path ? $path : '/') . "</span>
     </div>";
 
+// Build breadcrumb
 $breadcrumb = "<div class='breadcrumb'>📂 ";
 $parts = explode('/', $path);
 $currentPath = '';
-$breadcrumb .= "<a href='?branch=" . urlencode($branch) . "'>root</a> / ";
+$breadcrumb .= "<a href='?repo=" . urlencode($repo) . "&branch=" . urlencode($branch) . "'>root</a> / ";
 foreach ($parts as $i => $part) {
     if (empty($part)) continue;
     $currentPath .= ($i > 0 ? '/' : '') . $part;
-    $breadcrumb .= "<a href='?path=" . urlencode($currentPath) . "&branch=" . urlencode($branch) . "'>" . htmlspecialchars($part) . "</a>";
+    $breadcrumb .= "<a href='?repo=" . urlencode($repo) . "&path=" . urlencode($currentPath) . "&branch=" . urlencode($branch) . "'>" . htmlspecialchars($part) . "</a>";
     if ($i < count($parts) - 1) $breadcrumb .= " / ";
 }
 $breadcrumb .= "</div>";
@@ -132,7 +133,7 @@ echo $breadcrumb;
 
 echo "<table>
     <thead>
-        <tr><th>Name</th><th>Type</th><th>Size</th><th>Action</th></tr>
+        <tr><th>Name</th><th>Type</th><th>Size</th><th>Last Modified</th></tr>
     </thead>
     <tbody>";
 
@@ -143,30 +144,33 @@ $dirCount = 0;
 foreach ($files as $item) {
     $name = $item['name'];
     $type = $item['type'];
-    $size = $item['size'] ?? 0;
-    $downloadUrl = $item['download_url'] ?? '#';
+    $size = isset($item['size']) ? $item['size'] : 0;
+    $downloadUrl = isset($item['download_url']) ? $item['download_url'] : '#';
+    $modified = isset($item['sha']) ? substr($item['sha'], 0, 7) : 'N/A';
     
     if ($type === 'dir') {
         $dirCount++;
         $icon = '📁';
+        $link = "?repo=" . urlencode($repo) . "&path=" . urlencode($path . ($path ? '/' : '') . $name) . "&branch=" . urlencode($branch);
         echo "<tr>
-            <td><a href='?path=" . urlencode($path . ($path ? '/' : '') . $name) . "&branch=" . urlencode($branch) . "' class='folder'><span class='icon'>{$icon}</span> {$name}/</a></td>
+            <td><a href='{$link}' class='folder'><span class='icon'>{$icon}</span> {$name}/</a></td>
             <td>Directory</td>
             <td class='size'>-</td>
-            <td class='size'>-</td>
-        </tr>";
+            <td class='size'>{$modified}</td>
+         </tr>";
     } else {
         $fileCount++;
         $totalSize += $size;
         $icon = '📄';
         $sizeText = formatSize($size);
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $color = getFileColor($ext);
         echo "<tr>
-            <td><a href='{$downloadUrl}' target='_blank' class='file'><span class='icon'>{$icon}</span> {$name}</a></td>
-            <td>" . strtoupper($ext ?: 'FILE') . "</td>
+            <td><a href='{$downloadUrl}' target='_blank' class='file' style='color:{$color}'><span class='icon'>{$icon}</span> {$name}</a></td>
+            <td>" . strtoupper($ext ? $ext : 'TXT') . "</td>
             <td class='size'>{$sizeText}</td>
-            <td class='size'><a href='{$downloadUrl}' target='_blank' style='color:#58a6ff'>📥 Raw</a></td>
-        </tr>";
+            <td class='size'>{$modified}</td>
+         </tr>";
     }
 }
 
@@ -182,8 +186,8 @@ echo "<div style='margin-top: 20px; padding: 15px; background: #161b22; border-r
 
 echo "<div style='margin-top: 20px; padding: 15px; background: #161b22; border-radius: 6px;'>
     <strong>🔗 Quick Links:</strong><br>
-    <a href='https://github.com/{$repo}' target='_blank' style='color:#58a6ff'>🌐 View Saccussalis on GitHub</a><br>
-    <a href='?branch=main' style='color:#58a6ff'>📂 Repository Root</a>
+    <a href='?repo=" . urlencode($repo) . "&branch=" . urlencode($branch) . "' style='color:#58a6ff'>📂 Repository Root</a><br>
+    <a href='https://github.com/{$repo}' target='_blank' style='color:#58a6ff'>🌐 View on GitHub</a>
 </div>";
 
 echo "</body></html>";
@@ -193,5 +197,19 @@ function formatSize($bytes) {
     if ($bytes >= 1048576) return round($bytes / 1048576, 2) . ' MB';
     if ($bytes >= 1024) return round($bytes / 1024, 2) . ' KB';
     return $bytes . ' B';
+}
+
+function getFileColor($ext) {
+    $colors = [
+        'php' => '#7ee787',
+        'js' => '#f1e05a',
+        'html' => '#e34c26',
+        'css' => '#563d7c',
+        'json' => '#f1e05a',
+        'sql' => '#e38c2a',
+        'py' => '#3572A5',
+        'md' => '#083fa1',
+    ];
+    return isset($colors[$ext]) ? $colors[$ext] : '#c9d1d9';
 }
 ?>
