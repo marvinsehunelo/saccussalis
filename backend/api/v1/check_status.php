@@ -2,7 +2,8 @@
 // backend/api/v1/check_status.php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../../db.php'; // provides $pdo
+require_once __DIR__ . '/../../db.php';
+require_once __DIR__ . '/../../helpers/crypto.php';
 
 header('Content-Type: application/json');
 
@@ -12,6 +13,28 @@ try {
 
     if (!$swapRef) {
         throw new Exception("Missing swap_reference");
+    }
+
+    // ============================================================
+    // VERIFY INCOMING SIGNATURE (Optional but recommended for queries)
+    // ============================================================
+    $signature = $input['signature'] ?? null;
+    $timestamp = $input['timestamp'] ?? null;
+    $requester = $input['requester'] ?? 'VOUCHMORPH';
+
+    $payloadToVerify = ['swap_reference' => $swapRef];
+    $signatureVerified = false;
+
+    if ($signature) {
+        $publicKey = get_requester_public_key($requester, $pdo);
+        if ($publicKey) {
+            $signatureVerified = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+            if ($signatureVerified) {
+                error_log("SACCUSSALIS STATUS: Signature verified from {$requester}");
+            } else {
+                error_log("SACCUSSALIS STATUS: Invalid signature from {$requester}");
+            }
+        }
     }
 
     // --- 1. Fetch main swap ledger record ---
@@ -64,16 +87,26 @@ try {
         $status = 'completed';
     }
 
-    echo json_encode([
+    // ============================================================
+    // SEND SIGNED RESPONSE
+    // ============================================================
+    $responsePayload = [
         'swap_reference' => $swapRef,
         'status' => $status,
         'swap' => $swap,
         'transactions' => $transactions,
         'settlement' => $settlement,
-        'hold' => $hold
-    ]);
+        'hold' => $hold,
+        'requester' => $requester,
+        'signature_verified' => $signatureVerified
+    ];
+    
+    send_signed_response($responsePayload);
 
 } catch (Exception $e) {
     http_response_code(400);
-    echo json_encode(['error' => $e->getMessage()]);
+    echo json_encode([
+        'error' => $e->getMessage(),
+        'timestamp' => time()
+    ]);
 }
