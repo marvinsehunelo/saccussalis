@@ -4,8 +4,60 @@
 header('Content-Type: application/json');
 require_once '../../../db.php';
 require_once '../../../middleware/Idempotency.php';
+require_once '../../../helpers/crypto.php';
 
 $input = json_decode(file_get_contents("php://input"), true);
+
+// ============================================================
+// VERIFY INCOMING SIGNATURE
+// ============================================================
+$signature = $input['signature'] ?? null;
+$timestamp = $input['timestamp'] ?? null;
+$requester = $input['requester'] ?? 'VOUCHMORPH';
+
+$payloadToVerify = [
+    'hold_reference' => $input['hold_reference'] ?? null,
+    'session_id' => $input['session_id'] ?? null,
+    'foreign_atm_id' => $input['foreign_atm_id'] ?? null
+];
+$payloadToVerify = array_filter($payloadToVerify);
+
+if (!$signature) {
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: Missing signature from {$requester}");
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Missing signature - cashout confirmation must be signed'
+    ]);
+    exit;
+}
+
+$publicKey = get_requester_public_key($requester, $pdo);
+
+if (!$publicKey) {
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: No public key for requester: {$requester}");
+    echo json_encode([
+        'status' => 'error',
+        'message' => "No public key found for requester: {$requester}"
+    ]);
+    exit;
+}
+
+$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+
+if (!$isValid) {
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: Invalid signature from {$requester}");
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Invalid signature - cashout confirmation cannot be trusted'
+    ]);
+    exit;
+}
+
+error_log("SACCUSSALIS CONFIRM_CASHOUT: Signature verified from {$requester}");
+
+// ============================================================
+// PROCESS CASHOUT CONFIRMATION
+// ============================================================
 
 $idempotencyKey = $_SERVER['HTTP_X_IDEMPOTENCY_KEY'] ?? $input['request_id'] ?? null;
 if (!$idempotencyKey) {
@@ -65,17 +117,21 @@ try {
         $hold['wallet_id']
     ]);
 
-    // 4️⃣ Mark hold released
+    // 4️⃣ Mark hold released with requester info
     $stmt = $pdo->prepare("
         UPDATE financial_holds 
         SET status = 'RELEASED', 
             released_at = NOW(),
             foreign_atm_id = ?,
-            cashout_confirmed = true
+            cashout_confirmed = true,
+            confirmed_by = ?,
+            confirmation_signature_verified = ?
         WHERE id = ?
     ");
     $stmt->execute([
         $input['foreign_atm_id'],
+        $requester,
+        $isValid ? 1 : 0,
         $hold['id']
     ]);
 
@@ -84,12 +140,14 @@ try {
         UPDATE cash_instruments 
         SET status = 'CASHED_OUT', 
             cashed_out_at = NOW(),
-            foreign_atm_id = ?
+            foreign_atm_id = ?,
+            confirmed_by = ?
         WHERE hold_reference = ? 
         AND status = 'HELD'
     ");
     $stmt->execute([
         $input['foreign_atm_id'],
+        $requester,
         $input['hold_reference']
     ]);
 
@@ -98,7 +156,8 @@ try {
         UPDATE sat_tokens
         SET status = 'USED',
             processing = FALSE,
-            expires_at = NOW()
+            expires_at = NOW(),
+            confirmed_by = ?
         WHERE instrument_id = (
             SELECT instrument_id 
             FROM cash_instruments 
@@ -106,7 +165,7 @@ try {
         )
         AND status = 'ACTIVE'
     ");
-    $stmt->execute([$input['hold_reference']]);
+    $stmt->execute([$requester, $input['hold_reference']]);
 
     // 7️⃣ Create transaction record
     $reference = 'CASHOUT' . time() . rand(100, 999);
@@ -114,8 +173,8 @@ try {
     $stmt = $pdo->prepare("
         INSERT INTO transactions (
             user_id, reference, from_account, amount, type, 
-            status, channel, notes, created_at
-        ) VALUES (?, ?, ?, ?, 'ewallet_cashout', 'completed', 'foreign_atm', ?, NOW())
+            status, channel, notes, requester, signature_verified, created_at
+        ) VALUES (?, ?, ?, ?, 'ewallet_cashout', 'completed', 'foreign_atm', ?, ?, ?, NOW())
     ");
     $stmt->execute([
         $hold['user_id'],
@@ -126,7 +185,9 @@ try {
             'hold_reference' => $input['hold_reference'],
             'foreign_atm_id' => $input['foreign_atm_id'],
             'session_id' => $input['session_id']
-        ])
+        ]),
+        $requester,
+        $isValid ? 1 : 0
     ]);
 
     // 8️⃣ Create interbank claim
@@ -135,37 +196,45 @@ try {
     $stmt = $pdo->prepare("
         INSERT INTO interbank_claims (
             foreign_institution, amount, reference, hold_reference, 
-            status, created_at
-        ) VALUES (?, ?, ?, ?, 'PENDING', NOW())
+            status, requester, signature_verified, created_at
+        ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, NOW())
     ");
     $stmt->execute([
         $hold['foreign_bank'],
         $hold['amount'],
         $claimRef,
-        $input['hold_reference']
+        $input['hold_reference'],
+        $requester,
+        $isValid ? 1 : 0
     ]);
 
     $pdo->commit();
 
-    $response = [
+    // ============================================================
+    // SEND SIGNED RESPONSE
+    // ============================================================
+    $responsePayload = [
         'status' => 'success',
         'message' => 'Cashout committed successfully',
         'amount' => $hold['amount'],
         'transaction_reference' => $reference,
-        'claim_reference' => $claimRef
+        'claim_reference' => $claimRef,
+        'requester' => $requester,
+        'signature_verified' => $isValid
     ];
 
-    Idempotency::store($idempotencyKey, $response);
-
-    echo json_encode($response);
+    Idempotency::store($idempotencyKey, $responsePayload);
+    send_signed_response($responsePayload);
 
 } catch (Exception $e) {
-
     $pdo->rollBack();
 
+    error_log("SACCUSSALIS CONFIRM_CASHOUT error: " . $e->getMessage());
+    
     http_response_code(400);
     echo json_encode([
         'status' => 'error',
-        'message' => $e->getMessage()
+        'message' => $e->getMessage(),
+        'timestamp' => time()
     ]);
 }
