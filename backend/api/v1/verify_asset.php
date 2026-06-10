@@ -1,9 +1,11 @@
 <?php
 /**
  * verify_asset.php - FIXED for +26770000000 format
+ * WITH SIGNATURE VERIFICATION
  */
 
 require_once __DIR__ . '/../../db.php';
+require_once __DIR__ . '/../helpers/crypto.php';
 
 header("Content-Type: application/json");
 
@@ -22,44 +24,82 @@ error_log("RAW INPUT: " . $rawInput);
 $input = json_decode($rawInput, true);
 error_log("PARSED INPUT: " . json_encode($input));
 
-// Extract phone number - LOOK IN ALL POSSIBLE LOCATIONS
+// ============================================================
+// VERIFY INCOMING SIGNATURE
+// ============================================================
+$signature = $input['signature'] ?? null;
+$timestamp = $input['timestamp'] ?? null;
+$requester = $input['requester'] ?? 'VOUCHMORPH';
+
+$payloadToVerify = [
+    'asset_type' => $input['asset_type'] ?? null,
+    'amount' => $input['amount'] ?? null,
+    'reference' => $input['reference'] ?? null
+];
+$payloadToVerify = array_filter($payloadToVerify);
+
+if (!$signature) {
+    error_log("SACCUSSALIS: Missing signature from {$requester}");
+    echo json_encode([
+        "verified" => false,
+        "message" => "Missing signature - verification requests must be signed"
+    ]);
+    exit;
+}
+
+$publicKey = get_requester_public_key($requester, $pdo);
+
+if (!$publicKey) {
+    error_log("SACCUSSALIS: No public key for requester: {$requester}");
+    echo json_encode([
+        "verified" => false,
+        "message" => "No public key found for requester: {$requester}"
+    ]);
+    exit;
+}
+
+$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+
+if (!$isValid) {
+    error_log("SACCUSSALIS: Invalid signature from {$requester}");
+    echo json_encode([
+        "verified" => false,
+        "message" => "Invalid signature - request cannot be trusted"
+    ]);
+    exit;
+}
+
+error_log("SACCUSSALIS: Signature verified from {$requester}");
+
+// ============================================================
+// PROCESS VERIFICATION
+// ============================================================
+
+// Extract phone number
 $phone = null;
 
-// Check every possible location where the phone might be
 if (isset($input['ewallet_phone'])) {
     $phone = $input['ewallet_phone'];
-    error_log("Found in ewallet_phone: " . $phone);
-} 
-elseif (isset($input['ewallet']['ewallet_phone'])) {
+} elseif (isset($input['ewallet']['ewallet_phone'])) {
     $phone = $input['ewallet']['ewallet_phone'];
-    error_log("Found in ewallet.ewallet_phone: " . $phone);
-}
-elseif (isset($input['phone'])) {
+} elseif (isset($input['phone'])) {
     $phone = $input['phone'];
-    error_log("Found in phone: " . $phone);
-}
-elseif (isset($input['source']['ewallet']['ewallet_phone'])) {
+} elseif (isset($input['source']['ewallet']['ewallet_phone'])) {
     $phone = $input['source']['ewallet']['ewallet_phone'];
-    error_log("Found in source.ewallet.ewallet_phone: " . $phone);
-}
-elseif (isset($input['source']['phone'])) {
+} elseif (isset($input['source']['phone'])) {
     $phone = $input['source']['phone'];
-    error_log("Found in source.phone: " . $phone);
-}
-elseif (isset($input['wallet_phone'])) {
+} elseif (isset($input['wallet_phone'])) {
     $phone = $input['wallet_phone'];
-    error_log("Found in wallet_phone: " . $phone);
 }
 
 $amount = floatval($input['amount'] ?? 0);
 error_log("Amount: $amount");
 
 if (empty($phone)) {
-    error_log("ERROR: No phone number found in any location");
+    error_log("ERROR: No phone number found");
     echo json_encode([
         "verified" => false, 
-        "message" => "Phone number required",
-        "debug" => "No phone in: " . json_encode(array_keys($input))
+        "message" => "Phone number required"
     ]);
     exit;
 }
@@ -69,14 +109,9 @@ try {
         throw new Exception("Database connection failed");
     }
     
-    // Log the PDO connection status
-    error_log("Database connected successfully");
-    
-    // STORE THE EXACT PHONE FORMAT WE WANT TO MATCH
     $targetPhone = '+26770000000';
     error_log("Looking for phone: " . $targetPhone);
     
-    // Simple direct query with the exact format
     $stmt = $pdo->prepare("
         SELECT 
             wallet_id, 
@@ -101,7 +136,6 @@ try {
     error_log("Query executed. Found: " . ($wallet ? 'YES' : 'NO'));
     
     if (!$wallet) {
-        // If not found with exact match, try without the +
         $phoneWithoutPlus = ltrim($targetPhone, '+');
         error_log("Trying without plus: " . $phoneWithoutPlus);
         
@@ -115,21 +149,14 @@ try {
         $stmt->execute([':phone' => $phoneWithoutPlus]);
         $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($wallet) {
-            error_log("Found without plus!");
-        } else {
-            // Try to see what's in the database
+        if (!$wallet) {
             $checkStmt = $pdo->query("SELECT phone FROM wallets WHERE phone LIKE '%70000000%'");
             $possiblePhones = $checkStmt->fetchAll(PDO::FETCH_COLUMN);
-            error_log("Phones in DB containing 70000000: " . json_encode($possiblePhones));
+            error_log("Phones in DB: " . json_encode($possiblePhones));
             
             echo json_encode([
                 "verified" => false,
-                "message" => "Wallet not found with phone: " . $targetPhone,
-                "debug" => [
-                    "searched_for" => $targetPhone,
-                    "phones_in_db" => $possiblePhones
-                ]
+                "message" => "Wallet not found"
             ]);
             exit;
         }
@@ -137,7 +164,6 @@ try {
     
     error_log("Wallet found: " . json_encode($wallet));
     
-    // Check balance
     if ($wallet['balance'] < $amount) {
         error_log("Insufficient balance: {$wallet['balance']} < $amount");
         echo json_encode([
@@ -147,13 +173,17 @@ try {
         exit;
     }
     
-    // SUCCESS - Return exactly what SwapService expects
-    $response = [
+    // ============================================================
+    // SEND SIGNED RESPONSE
+    // ============================================================
+    $responsePayload = [
         "verified" => true,
         "asset_id" => $wallet['wallet_id'],
         "available_balance" => (float)$wallet['balance'],
         "holder_name" => "Saccus Salis Customer",
         "expiry_date" => null,
+        "requester" => $requester,
+        "signature_verified" => true,
         "metadata" => [
             "wallet_type" => $wallet['wallet_type'],
             "currency" => $wallet['currency'] ?? 'BWP',
@@ -161,8 +191,8 @@ try {
         ]
     ];
     
-    error_log("SUCCESS RESPONSE: " . json_encode($response));
-    echo json_encode($response);
+    error_log("SUCCESS RESPONSE: " . json_encode($responsePayload));
+    send_signed_response($responsePayload);
     
 } catch (Exception $e) {
     error_log("EXCEPTION: " . $e->getMessage());
