@@ -2,7 +2,7 @@
 // backend/api/v1/notify_debit.php
 
 require_once __DIR__ . '/../../db.php';
-require_once __DIR__ . '/../helpers/crypto.php';
+require_once __DIR__ . '/../../helpers/crypto.php';
 
 header('Content-Type: application/json');
 
