@@ -139,15 +139,7 @@ try {
     ");
     $stmt->execute([$transaction_id, $recipient_phone, $user_id, $pin, $sender_phone, $amount]);
 
-    // Update Cazacom wallet (only if available)
-    if ($cazacom_available) {
-        $stmt = $cazacom_pdo->prepare("SELECT if FROM users WHERE phone_number = ? LIMIT 1");
-        $stmt->execute([$recipient_phone]);
-        $c_user_id = $stmt->fetchColumn();
-        if ($c_user_id) {
-            $stmt = $cazacom_pdo->prepare("UPDATE wallets SET saccus_ewallet_balance = saccus_ewallet_balance + ? WHERE user_id=?");
-            $stmt->execute([$amount, $c_user_id]);
-        }
+
 
         // SMS notifications with direction
         $sms_stmt = $cazacom_pdo->prepare("
