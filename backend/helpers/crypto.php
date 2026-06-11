@@ -2,18 +2,70 @@
 // /SaccusSalisbank/backend/helpers/crypto.php
 
 /**
- * Sign a payload for outgoing response
+ * Get public key for a requester institution from trusted_partners table
+ * This is how Saccussalis verifies that requests come from trusted partners (like VOUCHMORPH)
+ */
+function get_requester_public_key($requester, $pdo)
+{
+    error_log("get_requester_public_key called for: {$requester}");
+    
+    try {
+        // Query the trusted_partners table for the requester's public key
+        $stmt = $pdo->prepare("
+            SELECT public_key 
+            FROM trusted_partners 
+            WHERE name = :name 
+            AND is_active = true
+            LIMIT 1
+        ");
+        $stmt->execute([':name' => $requester]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($row && !empty($row['public_key'])) {
+            error_log("Found public key for {$requester} in trusted_partners table");
+            return $row['public_key'];
+        }
+        
+        error_log("No public key found for requester: {$requester} in trusted_partners");
+        return null;
+        
+    } catch (Exception $e) {
+        error_log("Database error getting public key: " . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Sign a payload for outgoing response using RSA private key
  */
 function sign_payload($payload, $privateKey = null)
 {
     if (!$privateKey) {
-        $privateKey = getenv('SACCUSSALIS_PRIVATE_KEY');
+        // Get private key from environment variable (Railway secret)
+        $privateKeyContent = getenv('SACCUSSALIS_PRIVATE_KEY');
+        if (!$privateKeyContent) {
+            error_log("SACCUSSALIS_PRIVATE_KEY not found in environment");
+            return null;
+        }
+        $privateKey = openssl_pkey_get_private($privateKeyContent);
+        if (!$privateKey) {
+            error_log("Failed to load private key: " . openssl_error_string());
+            return null;
+        }
     }
     
     $timestamp = time();
     $payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
     $payloadJson = json_encode($payloadWithTimestamp);
-    $signature = hash_hmac('sha256', $payloadJson, $privateKey);
+    
+    // Generate RSA signature
+    $signature = '';
+    $success = openssl_sign($payloadJson, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+    
+    if (!$success) {
+        error_log("Failed to sign payload: " . openssl_error_string());
+        return null;
+    }
     
     return [
         'signature' => base64_encode($signature),
@@ -28,6 +80,14 @@ function send_signed_response($payload, $httpCode = 200)
 {
     $signed = sign_payload($payload);
     
+    if (!$signed) {
+        // Fallback to unsigned response if signing fails
+        error_log("WARNING: Sending unsigned response due to signing failure");
+        http_response_code($httpCode);
+        echo json_encode($payload);
+        exit;
+    }
+    
     $response = array_merge($payload, [
         'signature' => $signed['signature'],
         'timestamp' => $signed['timestamp']
@@ -39,15 +99,17 @@ function send_signed_response($payload, $httpCode = 200)
 }
 
 /**
- * Verify incoming signature from requester
+ * Verify incoming RSA signature from requester
  */
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
-    // Reject old messages
+    // Reject old messages (prevent replay attacks)
     if ($timestamp && abs(time() - $timestamp) > $maxAgeSeconds) {
+        error_log("Signature rejected: timestamp too old (age: " . abs(time() - $timestamp) . "s)");
         return false;
     }
     
+    // Prepare the payload that was signed
     if ($timestamp) {
         $payloadToVerify = array_merge($payload, ['_timestamp' => $timestamp]);
     } else {
@@ -55,7 +117,21 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
     }
     
     $payloadJson = json_encode($payloadToVerify);
-    $expectedSignature = base64_encode(hash_hmac('sha256', $payloadJson, $publicKey, true));
     
-    return hash_equals($expectedSignature, $signature);
+    // Verify RSA signature using openssl
+    $result = openssl_verify(
+        $payloadJson,
+        base64_decode($signature),
+        $publicKey,
+        OPENSSL_ALGO_SHA256
+    );
+    
+    $isValid = ($result === 1);
+    error_log("RSA Signature verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+    
+    if ($result === -1) {
+        error_log("Signature verification error: " . openssl_error_string());
+    }
+    
+    return $isValid;
 }
