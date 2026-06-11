@@ -2,15 +2,24 @@
 // /SaccusSalisbank/backend/helpers/crypto.php
 
 /**
- * Get public key for a requester institution from trusted_partners table
+ * Get public key for a requester institution from environment or trusted_partners table
  * This is how Saccussalis verifies that requests come from trusted partners (like VOUCHMORPH)
  */
 function get_requester_public_key($requester, $pdo)
 {
     error_log("get_requester_public_key called for: {$requester}");
     
+    // For VOUCHMORPH, check environment variable first (no database issues)
+    if ($requester === 'VOUCHMORPH') {
+        $envKey = getenv('VOUCHMORPH_PUBLIC_KEY');
+        if ($envKey && !empty($envKey)) {
+            error_log("Using VOUCHMORPH_PUBLIC_KEY from environment");
+            return $envKey;
+        }
+    }
+    
+    // Fallback to database for other institutions
     try {
-        // Query the trusted_partners table for the requester's public key
         $stmt = $pdo->prepare("
             SELECT public_key 
             FROM trusted_partners 
@@ -26,7 +35,7 @@ function get_requester_public_key($requester, $pdo)
             return $row['public_key'];
         }
         
-        error_log("No public key found for requester: {$requester} in trusted_partners");
+        error_log("No public key found for requester: {$requester}");
         return null;
         
     } catch (Exception $e) {
@@ -47,6 +56,9 @@ function sign_payload($payload, $privateKey = null)
             error_log("SACCUSSALIS_PRIVATE_KEY not found in environment");
             return null;
         }
+        // Handle line breaks in environment variable
+        $privateKeyContent = str_replace('\\n', "\n", $privateKeyContent);
+        $privateKeyContent = str_replace('\n', "\n", $privateKeyContent);
         $privateKey = openssl_pkey_get_private($privateKeyContent);
         if (!$privateKey) {
             error_log("Failed to load private key: " . openssl_error_string());
