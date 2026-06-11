@@ -11,20 +11,21 @@ try {
     error_log("=== SACCUSSALIS HOLD.PHP RECEIVED === " . json_encode($input));
 
     // ============================================================
-    // VERIFY INCOMING SIGNATURE
+    // VERIFY INCOMING SIGNATURE - Include ALL fields from input
     // ============================================================
     $signature = $input['signature'] ?? null;
     $timestamp = $input['timestamp'] ?? null;
     $requester = $input['requester'] ?? 'VOUCHMORPH';
 
-    $payloadToVerify = [
-        'action' => $input['action'] ?? null,
-        'amount' => $input['amount'] ?? null,
-        'reference' => $input['reference'] ?? null,
-        'destination_institution' => $input['destination_institution'] ?? null,
-        'phone' => $input['phone'] ?? $input['ewallet_phone'] ?? null
-    ];
-    $payloadToVerify = array_filter($payloadToVerify);
+    // Include ALL fields EXCEPT signature, timestamp, and _timestamp
+    $payloadToVerify = [];
+    foreach ($input as $key => $value) {
+        if (!in_array($key, ['signature', 'timestamp', '_timestamp'])) {
+            $payloadToVerify[$key] = $value;
+        }
+    }
+    
+    error_log("SACCUSSALIS HOLD: Verifying payload: " . json_encode($payloadToVerify));
 
     if (!$signature) {
         error_log("SACCUSSALIS HOLD: Missing signature from {$requester}");
