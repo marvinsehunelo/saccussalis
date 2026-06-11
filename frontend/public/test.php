@@ -2,8 +2,8 @@
 // test_verify_vouchmorph.php
 // Place this in Saccussalis: /public/test_verify_vouchmorph.php
 
-require_once __DIR__ . '/backend/db.php';
-require_once __DIR__ . '/backend/helpers/crypto.php';
+require_once __DIR__ . '/../../backend/db.php';
+require_once __DIR__ . '/../../backend/helpers/crypto.php';
 
 header("Content-Type: application/json");
 
