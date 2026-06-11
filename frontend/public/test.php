@@ -1,37 +1,45 @@
 <?php
-// /frontend/public/test_fresh.php
+// /public/verify_test.php
 
 require_once __DIR__ . '/../../backend/db.php';
 require_once __DIR__ . '/../../backend/helpers/crypto.php';
 
 header("Content-Type: text/plain");
 
-// PASTE THE FRESH VALUES HERE:
+// === PASTE THE VALUES FROM VOUCHMORPH HERE ===
 $signature = "PASTE_SIGNATURE_HERE";
-$timestamp = 1234567890; // Replace with actual timestamp
+$timestamp = 1234567890;
+$jsonThatWasSigned = '{"action":"PLACE_HOLD","amount":100,"asset_id":4,"asset_type":"BANK-WALLET","currency":"BWP","destination_institution":"ZURUBANK","email":"+26770000000","expiry":"2026-06-12...","hold_reason":"PENDING_SWAP","national_id":"+26770000000","phone":"+26770000000","reference":"SWAP_TEST_001","source_identifier":"+26770000000","source_identifier_type":"phone","wallet_phone":"+26770000000","_timestamp":1234567890}';
+// ============================================
 
-$stmt = $pdo->prepare("SELECT public_key FROM trusted_partners WHERE name = 'VOUCHMORPH' AND is_active = true");
+// Get stored public key
+$stmt = $pdo->prepare("SELECT public_key FROM trusted_partners WHERE name = 'VOUCHMORPH'");
 $stmt->execute();
 $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$row) {
-    echo "ERROR: VOUCHMORPH public key not found\n";
-    exit;
-}
-
 $publicKey = $row['public_key'];
 
-$payloadToVerify = [
-    'action' => 'VERIFY_ASSET',
-    'reference' => 'TEST_' . $timestamp,
-    'asset_type' => 'BANK-WALLET',
-    'amount' => 100,
-    'currency' => 'BWP',
-    'institution' => 'SACCUSSALIS',
-    'swap_type' => 'CASHOUT',
-    'source_identifier' => '+26770000000'
-];
+echo "=== SACCUSSALIS VERIFYING ===\n\n";
+echo "Using public key (first 50): " . substr($publicKey, 0, 50) . "...\n\n";
+echo "Verifying JSON:\n" . $jsonThatWasSigned . "\n\n";
 
-$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+// Verify directly using the JSON string
+$result = openssl_verify(
+    $jsonThatWasSigned,
+    base64_decode($signature),
+    $publicKey,
+    OPENSSL_ALGO_SHA256
+);
 
-echo "RESULT: " . ($isValid ? "VALID ✓" : "INVALID ✗") . "\n";
+echo "openssl_verify result: " . $result . "\n";
+echo "SIGNATURE IS: " . ($result === 1 ? "VALID ✓" : "INVALID ✗") . "\n";
+
+if ($result === -1) {
+    echo "OpenSSL error: " . openssl_error_string() . "\n";
+}
+
+// Also test with verify_signature function
+$payloadWithoutTimestamp = json_decode($jsonThatWasSigned, true);
+unset($payloadWithoutTimestamp['_timestamp']);
+
+$isValid = verify_signature($payloadWithoutTimestamp, $signature, $publicKey, $timestamp);
+echo "\nverify_signature() result: " . ($isValid ? "VALID ✓" : "INVALID ✗") . "\n";
