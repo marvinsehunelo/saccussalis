@@ -141,7 +141,7 @@ try {
 
     // Update Cazacom wallet (only if available)
     if ($cazacom_available) {
-        $stmt = $cazacom_pdo->prepare("SELECT id FROM users WHERE phone_number = ? LIMIT 1");
+        $stmt = $cazacom_pdo->prepare("SELECT if FROM users WHERE phone_number = ? LIMIT 1");
         $stmt->execute([$recipient_phone]);
         $c_user_id = $stmt->fetchColumn();
         if ($c_user_id) {
