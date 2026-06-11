@@ -1,20 +1,13 @@
 <?php
 require_once(__DIR__ . "/../includes/secure_api_header.php"); // $pdo, $user_id
-require_once(__DIR__ . "/../includes/cazacom_db.php"); // $cazacom_pdo
 header("Content-Type: application/json; charset=utf-8");
-
-// Check if Cazacom DB is connected
-$cazacom_available = isset($cazacom_pdo) && $cazacom_pdo !== null;
-if (!$cazacom_available) {
-    error_log("Cazacom DB not available - proceeding with main DB only");
-}
 
 // --- Input ---
 $data = json_decode(file_get_contents("php://input"), true);
 $recipient_phone = trim($data['recipient_phone'] ?? '');
 $amount = floatval($data['amount'] ?? 0);
 $from_account_type = $data['from_account_type'] ?? null;
-$notes = trim($data['notes'] ?? ''); // optional
+$notes = trim($data['notes'] ?? '');
 
 if (empty($recipient_phone) || $amount <= 0 || empty($from_account_type)) {
     echo json_encode(["status" => "error", "message" => "Recipient phone, valid amount, and account type are required"]);
@@ -88,11 +81,8 @@ if (!$sender_phone) {
     exit;
 }
 
-// --- Begin transactions ---
+// --- Begin transaction ---
 $pdo->beginTransaction();
-if ($cazacom_available) {
-    $cazacom_pdo->beginTransaction();
-}
 
 try {
     // Deduct from sender
@@ -111,11 +101,11 @@ try {
         throw new Exception("Deduction failed: insufficient balance or already processed");
     }
 
-    // Credit recipient
+    // Credit recipient wallet
     $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ? WHERE wallet_id = ?");
     $stmt->execute([$amount, $recipient_wallet_id]);
 
-    // Split fees
+    // Split fees between internal accounts
     $saccus_fee = round($fee_amount * 0.6, 2);
     $cazacom_fee = $fee_amount - $saccus_fee;
     $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE user_id = 42")->execute([$saccus_fee]);
@@ -139,29 +129,24 @@ try {
     ");
     $stmt->execute([$transaction_id, $recipient_phone, $user_id, $pin, $sender_phone, $amount]);
 
-
-
-        // SMS notifications with direction
-        $sms_stmt = $cazacom_pdo->prepare("
-            INSERT INTO sms (user_id, target_number, sender_number, message, cost, direction)
-            VALUES ((SELECT id FROM users WHERE phone_number=? LIMIT 1), ?, ?, ?, 0, ?)
-        ");
-        $sms_stmt->execute([$recipient_phone, $recipient_phone, $sender_phone, "You received P$amount via eWallet. PIN: $pin", 'in']);
-        $sms_stmt->execute([$sender_phone, $sender_phone, $sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone", 'out']);
-    } else {
-        // Log that SMS wasn't sent
-        error_log("Cazacom DB not available - SMS notifications skipped for transaction $transaction_id");
-    }
-
-    // Commit transactions
+    // Commit transaction
     $pdo->commit();
-    if ($cazacom_available) {
-        $cazacom_pdo->commit();
+
+    // Send SMS via your own SMS service (not Cazacom DB)
+    $sms_sent = false;
+    if (function_exists('sendSmsNotification')) {
+        // Send to recipient
+        sendSmsNotification($recipient_phone, "You received P$amount via eWallet from Saccussalis. Use PIN: $pin to withdraw. Valid for 15 minutes.");
+        // Send to sender
+        sendSmsNotification($sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone. Fee: P$fee_amount. Reference: $transaction_id");
+        $sms_sent = true;
+    } else {
+        error_log("SMS notification function not available for transaction $transaction_id");
     }
 
     echo json_encode([
         "status" => "success",
-        "message" => "eWallet transfer successful" . ($cazacom_available ? "" : " (SMS notifications skipped)"),
+        "message" => "eWallet transfer successful" . ($sms_sent ? "" : " (SMS notifications skipped)"),
         "transaction_id" => $transaction_id,
         "recipient_phone" => $recipient_phone,
         "pin" => $pin
@@ -169,9 +154,6 @@ try {
 
 } catch (Exception $e) {
     $pdo->rollBack();
-    if ($cazacom_available) {
-        $cazacom_pdo->rollBack();
-    }
     error_log("eWallet Transfer Failed: " . $e->getMessage());
     echo json_encode(["status" => "error", "message" => "Transfer failed: " . $e->getMessage()]);
 }
