@@ -3,7 +3,7 @@
 
 // Fix the paths - go up to root then into backend
 require_once __DIR__ . '/../../backend/db.php';
-require_once __DIR__ . '/../../backend/helpers/crypto.php';
+require_once __DIR__ . '/../../backend/helpers/crypto.php'; 
 
 header("Content-Type: text/plain");
 
