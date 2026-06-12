@@ -54,6 +54,9 @@ try {
         exit;
     }
 
+    // In hold.php, after getting $publicKey
+test_key_mismatch($payloadToVerify, $signature, $publicKey);
+
     $isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
 
     if (!$isValid) {
