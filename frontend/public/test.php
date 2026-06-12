@@ -1,7 +1,4 @@
 <?php
-// backend/api/v1/test_cert.php
-
-require_once '/app/backend/db.php';
 require_once '/app/backend/helpers/CertificateManager.php';
 
 header('Content-Type: application/json');
