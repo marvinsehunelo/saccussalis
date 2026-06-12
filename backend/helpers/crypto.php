@@ -113,85 +113,109 @@ function send_signed_response($payload, $httpCode = 200)
     exit;
 }
 
+<?php
+// /SaccusSalisbank/backend/helpers/crypto.php
+
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
-    // ... Keep your existing setup / public key formatting blocks up top ...
-
-    $rawStream = file_get_contents('php://input');
-    $streamDecoded = json_decode($rawStream, true) ?? [];
+    // Reject old messages (prevent replay attacks)
+    if ($timestamp && abs(time() - $timestamp) > $maxAgeSeconds) {
+        error_log("Signature rejected: timestamp too old (age: " . abs(time() - $timestamp) . "s)");
+        return false;
+    }
     
-    $testPayloads = [];
-
-    // --- Core Sub-Layout Testing ---
-    if (!empty($streamDecoded)) {
-        // Variant 1: Pure transactional structure (Omitting peripheral lookup fields)
-        $testPayloads['F) Core Transaction Fields Only'] = [
-            "action"                  => $streamDecoded['action'] ?? null,
-            "reference"               => $streamDecoded['reference'] ?? null,
-            "asset_type"              => $streamDecoded['asset_type'] ?? null,
-            "amount"                  => isset($streamDecoded['amount']) ? (int)$streamDecoded['amount'] : null,
-            "currency"                => $streamDecoded['currency'] ?? null,
-            "hold_reason"             => $streamDecoded['hold_reason'] ?? null,
-            "destination_institution" => $streamDecoded['destination_institution'] ?? null,
-            "expiry"                  => $streamDecoded['expiry'] ?? null,
-            "timestamp"               => isset($streamDecoded['timestamp']) ? (int)$streamDecoded['timestamp'] : null,
-            "asset_id"                => isset($streamDecoded['asset_id']) ? (int)$streamDecoded['asset_id'] : null,
-            "requester"               => $streamDecoded['requester'] ?? null
-        ];
-
-        // Variant 2: Pure transactional structure with String-cast numbers
-        $testPayloads['G) Core Transaction Fields Only (Strings)'] = [
-            "action"                  => $streamDecoded['action'] ?? null,
-            "reference"               => $streamDecoded['reference'] ?? null,
-            "asset_type"              => $streamDecoded['asset_type'] ?? null,
-            "amount"                  => isset($streamDecoded['amount']) ? (string)$streamDecoded['amount'] : null,
-            "currency"                => $streamDecoded['currency'] ?? null,
-            "hold_reason"             => $streamDecoded['hold_reason'] ?? null,
-            "destination_institution" => $streamDecoded['destination_institution'] ?? null,
-            "expiry"                  => $streamDecoded['expiry'] ?? null,
-            "timestamp"               => isset($streamDecoded['timestamp']) ? (string)$streamDecoded['timestamp'] : null,
-            "asset_id"                => isset($streamDecoded['asset_id']) ? (string)$streamDecoded['asset_id'] : null,
-            "requester"               => $streamDecoded['requester'] ?? null
-        ];
-
-        // Variant 3: Baseline Minimalist Ledger Hold Layout
-        $testPayloads['H) Minimal Hold Signature Block'] = [
-            "action"      => $streamDecoded['action'] ?? null,
-            "reference"   => $streamDecoded['reference'] ?? null,
-            "asset_id"    => isset($streamDecoded['asset_id']) ? (int)$streamDecoded['asset_id'] : null,
-            "amount"      => isset($streamDecoded['amount']) ? (int)$streamDecoded['amount'] : null,
-            "currency"    => $streamDecoded['currency'] ?? null,
-            "timestamp"   => isset($streamDecoded['timestamp']) ? (int)$streamDecoded['timestamp'] : null
-        ];
+    // IMPORTANT: The payload already contains ALL fields including 'timestamp'
+    // We should NOT add '_timestamp' or modify the payload in any way
+    // Just verify against the payload AS-IS
+    
+    // Ensure the payload has the timestamp field (VouchMorph uses 'timestamp', not '_timestamp')
+    if (!isset($payload['timestamp']) && $timestamp) {
+        // Only add if missing (shouldn't happen with VouchMorph)
+        $payload['timestamp'] = $timestamp;
     }
-
-    // Keep attempts A, B, C, D, E underneath so we have total visibility
-    $testPayloads['A) Passed Payload (Natural)'] = $payload;
-
-    $decodedSig = base64_decode($signature);
-    $finalSuccess = false;
-    $winningStrategy = "";
-
-    foreach ($testPayloads as $strategyName => $payloadVariant) {
-        // Clean out nulls if any keys weren't present
-        $payloadVariant = array_filter($payloadVariant, function($v) { return !is_null($v); });
-
-        $jsonStr = json_encode($payloadVariant, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $result = openssl_verify($jsonStr, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
-        
-        if ($result === 1) {
-            error_log("→ STRATEGY MATCHED: {$strategyName} ✓✓✓");
-            error_log("→ Content: " . $jsonStr);
-            $finalSuccess = true;
-            $winningStrategy = $strategyName;
-            break;
-        }
+    
+    // Remove signature field if it somehow got into the payload
+    unset($payload['signature']);
+    
+    // Sort keys alphabetically (important! VouchMorph likely does this)
+    ksort($payload);
+    
+    // Create JSON string with the same formatting as VouchMorph
+    // Use JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE to match common practice
+    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    
+    error_log("VERIFYING SIGNATURE WITH PAYLOAD: " . $payloadJson);
+    error_log("SIGNATURE (first 50 chars): " . substr($signature, 0, 50));
+    
+    // Decode signature from base64
+    $decodedSignature = base64_decode($signature);
+    if ($decodedSignature === false) {
+        error_log("Failed to decode signature from base64");
+        return false;
     }
-
-    if ($finalSuccess) {
+    
+    // Load public key
+    $key = openssl_pkey_get_public($publicKey);
+    if ($key === false) {
+        error_log("Failed to load public key: " . openssl_error_string());
+        return false;
+    }
+    
+    // Verify signature
+    $result = openssl_verify($payloadJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
+    
+    // Free key resource
+    openssl_free_key($key);
+    
+    if ($result === 1) {
+        error_log("✓ SIGNATURE VALID ✓");
         return true;
+    } elseif ($result === 0) {
+        error_log("✗ SIGNATURE INVALID ✗");
+        
+        // Diagnostic: Try without ksort to see if ordering is the issue
+        $payloadUnsorted = $payload;
+        unset($payloadUnsorted['signature']);
+        $payloadUnsortedJson = json_encode($payloadUnsorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $result2 = openssl_verify($payloadUnsortedJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
+        
+        if ($result2 === 1) {
+            error_log("  → Actually valid WITHOUT sorting! VouchMorph may not sort keys.");
+            error_log("  → Unsorted payload: " . $payloadUnsortedJson);
+            return true;
+        }
+        
+        // Diagnostic: Try with original raw input
+        $rawInput = file_get_contents('php://input');
+        $rawDecoded = json_decode($rawInput, true);
+        if ($rawDecoded && isset($rawDecoded['signature'])) {
+            unset($rawDecoded['signature']);
+            ksort($rawDecoded);
+            $rawJson = json_encode($rawDecoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $result3 = openssl_verify($rawJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
+            
+            if ($result3 === 1) {
+                error_log("  → Actually valid with raw input (sorted)!");
+                error_log("  → Raw payload: " . $rawJson);
+                return true;
+            }
+            
+            // Try raw input without sorting
+            $rawUnsorted = $rawDecoded;
+            $rawUnsortedJson = json_encode($rawUnsorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $result4 = openssl_verify($rawUnsortedJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
+            
+            if ($result4 === 1) {
+                error_log("  → Actually valid with raw input (unsorted)!");
+                error_log("  → Raw unsorted payload: " . $rawUnsortedJson);
+                return true;
+            }
+        }
+        
+        error_log("  → All verification attempts failed");
+        return false;
+    } else {
+        error_log("OpenSSL verification error: " . openssl_error_string());
+        return false;
     }
-
-    error_log("CRITICAL DIAGNOSTIC: All combinations (including structural sub-filtering) failed.");
-    return false;
 }
