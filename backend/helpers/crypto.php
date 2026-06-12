@@ -69,15 +69,16 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
 {
     error_log("\n=================== CRYPTO ENGINE DIAGNOSTIC AUDIT ===================");
     
-    if (empty($publicKey)) {
-        error_log("[-] AUDIT CRITICAL: Received an empty or null public key string for validation.");
-        return false;
-    }
-
+    // --- OPENSSL ENGINE LIVE TEST ---
+    error_log("[*] OPENSSL TEST: Attempting to parse Public Key resource...");
     $publicKeyResource = openssl_pkey_get_public($publicKey);
     if ($publicKeyResource === false) {
+        error_log("[-] OPENSSL ENGINE ERROR: " . openssl_error_string());
         error_log("[-] AUDIT CRITICAL: The resolved public key failed to initialize in OpenSSL context.");
         return false;
+    } else {
+        $keyDetails = openssl_pkey_get_details($publicKeyResource);
+        error_log("[+] OPENSSL SUCCESS: Key parsed successfully! Bits: " . ($keyDetails['bits'] ?? 'unknown') . ", Type: " . ($keyDetails['type'] ?? 'unknown'));
     }
     
     $decodedSig = base64_decode($signature);
@@ -129,6 +130,8 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
             error_log("======================================================================\n");
             if (function_exists('openssl_free_key')) { @openssl_free_key($publicKeyResource); }
             return true;
+        } else {
+            error_log("[-] FAILED variant [{$testIdentifier}] - OpenSSL Error: " . openssl_error_string());
         }
     }
 
@@ -144,10 +147,8 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
     if ($keyTestResult === 0) {
         error_log("\n[!] ROOT CAUSE CONFIRMED: CRYPTOGRAPHIC KEY PAIR MISMATCH.");
         error_log("    - Explanatory Detail: The public key verified by this file is structurally valid, but does not fit the private key signing outbound payloads.");
-        error_log("    - Execution Target: Check that Saccussalis environment variables precisely match VouchMorph engine variables.");
     } else {
         error_log("\n[!] ROOT CAUSE CONFIRMED: PAYLOAD/SERIALIZATION MUTATION DISCREPANCY.");
-        error_log("    - Explanatory Detail: The key pairs mathematically connect, but your data transformations or structural data types are malformed.");
     }
 
     error_log("----------------------------------------------------------------------------------");
