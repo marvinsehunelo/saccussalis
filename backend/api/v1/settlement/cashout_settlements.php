@@ -5,56 +5,41 @@ header('Content-Type: application/json');
 require_once '../../../db.php';
 require_once '../../../middleware/Idempotency.php';
 require_once '../../../helpers/crypto.php';
+require_once '../../../helpers/CertificateManager.php';
 
 $input = json_decode(file_get_contents('php://input'), true);
 
 // ============================================================
-// VERIFY INCOMING SIGNATURE
+// CERTIFICATE-BASED VERIFICATION (REQUIRED)
 // ============================================================
-$signature = $input['signature'] ?? null;
-$timestamp = $input['timestamp'] ?? null;
-$requester = $input['requester'] ?? 'VOUCHMORPH';
 
-$payloadToVerify = [
-    'type' => $input['type'] ?? null,
-    'amount' => $input['amount'] ?? null,
-    'wallet_id' => $input['wallet_id'] ?? null,
-    'sat_number' => $input['sat_number'] ?? null
-];
-$payloadToVerify = array_filter($payloadToVerify);
-
-if (!$signature) {
-    error_log("SACCUSSALIS SETTLEMENT: Missing signature from {$requester}");
+if (!isset($input['certificate'])) {
+    error_log("SACCUSSALIS SETTLEMENT: No certificate provided");
     echo json_encode([
         'status' => 'error',
-        'message' => 'Missing signature - settlement requests must be signed'
+        'message' => 'Certificate required - please upgrade to certificate-based authentication'
     ]);
     exit;
 }
 
-$publicKey = get_requester_public_key($requester, $pdo);
+$certManager = new CertificateManager('SACCUSSALIS');
+$verification = $certManager->verifySignedRequest($input);
+$isValid = $verification['verified'];
+$requester = $verification['requester'];
 
-if (!$publicKey) {
-    error_log("SACCUSSALIS SETTLEMENT: No public key for requester: {$requester}");
-    echo json_encode([
-        'status' => 'error',
-        'message' => "No public key found for requester: {$requester}"
-    ]);
-    exit;
-}
-
-$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+error_log("SACCUSSALIS SETTLEMENT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+error_log("SACCUSSALIS SETTLEMENT: Requester: {$requester}");
 
 if (!$isValid) {
-    error_log("SACCUSSALIS SETTLEMENT: Invalid signature from {$requester}");
+    error_log("SACCUSSALIS SETTLEMENT: Certificate verification failed");
     echo json_encode([
         'status' => 'error',
-        'message' => 'Invalid signature - settlement request cannot be trusted'
+        'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
     ]);
     exit;
 }
 
-error_log("SACCUSSALIS SETTLEMENT: Signature verified from {$requester}");
+error_log("SACCUSSALIS SETTLEMENT: Request verified from {$requester} using certificate");
 
 // ============================================================
 // PROCESS SETTLEMENT
@@ -69,6 +54,10 @@ if (!$idempotencyKey) {
 }
 Idempotency::check($idempotencyKey);
 
+// Initialize variables
+$reference = null;
+$settlementId = null;
+
 try {
     $pdo->beginTransaction();
 
@@ -81,46 +70,136 @@ try {
     switch (strtoupper($type)) {
 
         case 'SAT_TOKEN':
+            $satNumber = $input['sat_number'] ?? null;
+            if (!$satNumber) throw new Exception("SAT number required for SAT token settlement");
+
+            // Check if SAT token exists and is valid
+            $stmt = $pdo->prepare("
+                SELECT s.*, c.status as instrument_status
+                FROM sat_tokens s
+                JOIN cash_instruments c ON s.instrument_id = c.instrument_id
+                WHERE s.sat_code = ? OR s.auth_code = ?
+                FOR UPDATE
+            ");
+            $stmt->execute([$satNumber, $satNumber]);
+            $satToken = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$satToken) {
+                throw new Exception("SAT token not found: $satNumber");
+            }
+
+            if ($satToken['status'] !== 'ACTIVE') {
+                throw new Exception("SAT token is not active. Status: " . $satToken['status']);
+            }
+
+            // Mark SAT token as SETTLED
+            $stmt = $pdo->prepare("
+                UPDATE sat_tokens 
+                SET status = 'SETTLED', 
+                    settled_at = NOW(),
+                    settlement_ref = ?,
+                    settled_by = ?,
+                    settlement_verified = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$reference, $requester, $isValid ? 1 : 0, $satToken['id']]);
+
             $stmt = $pdo->prepare("
                 INSERT INTO settlements 
                 (settlement_ref, type, sat_number, amount, issuer_bank, acquirer_bank, status, 
-                 requester, signature_verified, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NOW())
+                 requester, signature_verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, NOW(), NOW())
+                RETURNING id
             ");
             $stmt->execute([
                 $reference,
-                $input['sat_number'] ?? null,
-                $input['sat_number'] ?? null,
+                $type,
+                $satNumber,
                 $amount,
-                $input['issuer_bank'] ?? null,
+                $input['issuer_bank'] ?? $satToken['issuer_bank'] ?? null,
                 $input['acquirer_bank'] ?? null,
                 $requester,
                 $isValid ? 1 : 0
             ]);
-            $message = "SAT token settlement recorded successfully";
+            $settlementId = $stmt->fetchColumn();
+            
+            $message = "SAT token settlement completed successfully";
+            $status = 'completed';
             break;
 
         case 'EWALLET_SWAP':
             $walletId = $input['wallet_id'] ?? null;
             if (!$walletId) throw new Exception("Wallet ID required for eWallet swap settlement");
 
-            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE wallet_id = ? FOR UPDATE");
+            // Lock and check wallet balance
+            $stmt = $pdo->prepare("SELECT balance, held_balance FROM wallets WHERE wallet_id = ? AND status = 'active' AND is_frozen = false FOR UPDATE");
             $stmt->execute([$walletId]);
             $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
-            if (!$wallet) throw new Exception("Wallet not found");
-            if ($wallet['balance'] < $amount) throw new Exception("Insufficient wallet balance");
+            
+            if (!$wallet) throw new Exception("Wallet not found or inactive");
+            if ($wallet['balance'] < $amount) throw new Exception("Insufficient wallet balance. Available: {$wallet['balance']}, Required: {$amount}");
 
-            $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ? WHERE wallet_id = ?");
+            // Debit wallet
+            $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, updated_at = NOW() WHERE wallet_id = ?");
             $stmt->execute([$amount, $walletId]);
+
+            // Get updated balance
+            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE wallet_id = ?");
+            $stmt->execute([$walletId]);
+            $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
 
             $stmt = $pdo->prepare("
                 INSERT INTO settlements 
-                (settlement_ref, wallet_id, amount, status, requester, signature_verified, created_at)
-                VALUES (?, ?, ?, 'completed', ?, ?, NOW())
+                (settlement_ref, type, wallet_id, amount, status, requester, signature_verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'completed', ?, ?, NOW(), NOW())
+                RETURNING id
             ");
-            $stmt->execute([$reference, $walletId, $amount, $requester, $isValid ? 1 : 0]);
+            $stmt->execute([$reference, $type, $walletId, $amount, $requester, $isValid ? 1 : 0]);
+            $settlementId = $stmt->fetchColumn();
 
             $message = "eWallet swap settlement completed successfully";
+            $status = 'completed';
+            break;
+
+        case 'ATM_CASHOUT':
+            $holdReference = $input['hold_reference'] ?? null;
+            if (!$holdReference) throw new Exception("Hold reference required for ATM cashout settlement");
+
+            // Find the hold
+            $stmt = $pdo->prepare("
+                SELECT * FROM financial_holds 
+                WHERE hold_reference = ? AND status = 'HELD'
+                FOR UPDATE
+            ");
+            $stmt->execute([$holdReference]);
+            $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$hold) throw new Exception("Active hold not found for reference: $holdReference");
+
+            // Mark hold as settled
+            $stmt = $pdo->prepare("
+                UPDATE financial_holds 
+                SET status = 'SETTLED', 
+                    settlement_ref = ?,
+                    settled_by = ?,
+                    settlement_verified = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$reference, $requester, $isValid ? 1 : 0, $hold['id']]);
+
+            $stmt = $pdo->prepare("
+                INSERT INTO settlements 
+                (settlement_ref, type, amount, hold_reference, status, requester, signature_verified, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'completed', ?, ?, NOW(), NOW())
+                RETURNING id
+            ");
+            $stmt->execute([$reference, $type, $amount, $holdReference, $requester, $isValid ? 1 : 0]);
+            $settlementId = $stmt->fetchColumn();
+
+            $message = "ATM cashout settlement completed successfully";
+            $status = 'completed';
             break;
 
         default:
@@ -129,29 +208,39 @@ try {
 
     $pdo->commit();
 
+    error_log("SACCUSSALIS SETTLEMENT: Settlement completed - Ref: {$reference}, Type: {$type}, Amount: {$amount}");
+
     // ============================================================
-    // SEND SIGNED RESPONSE
+    // SEND SIGNED RESPONSE WITH CERTIFICATE
     // ============================================================
     $responsePayload = [
         'status' => 'success',
         'settlement_ref' => $reference,
+        'settlement_id' => $settlementId,
         'type' => $type,
         'amount' => $amount,
+        'settlement_status' => $status,
         'message' => $message,
         'requester' => $requester,
-        'signature_verified' => $isValid
+        'signature_verified' => $isValid,
+        'verification_method' => 'certificate',
+        'timestamp' => time()
     ];
 
     Idempotency::store($idempotencyKey, $responsePayload);
     send_signed_response($responsePayload);
 
 } catch (Exception $e) {
-    $pdo->rollBack();
-    error_log("SACCUSSALIS SETTLEMENT error: " . $e->getMessage());
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log("SACCUSSALIS SETTLEMENT ERROR: " . $e->getMessage());
+    error_log("SACCUSSALIS SETTLEMENT Input: " . json_encode($input ?? []));
+    
     http_response_code(500);
     echo json_encode([
         'status' => 'error',
-        'message' => $e->getMessage(),
+        'message' => 'Settlement failed: ' . $e->getMessage(),
         'timestamp' => time()
     ]);
 }
