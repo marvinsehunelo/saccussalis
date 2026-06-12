@@ -112,6 +112,7 @@ function send_signed_response($payload, $httpCode = 200)
 
 /**
  * Verify incoming RSA signature from requester
+ * Handles both 'timestamp' (VouchMorph) and '_timestamp' (internal) formats
  */
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
@@ -121,14 +122,20 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
         return false;
     }
     
-    // Prepare the payload that was signed
-    if ($timestamp) {
-        $payloadToVerify = array_merge($payload, ['_timestamp' => $timestamp]);
-    } else {
-        $payloadToVerify = $payload;
+    // Determine which payload to verify
+    $payloadToVerify = $payload;
+    
+    // If timestamp was provided separately and not already in payload, add as _timestamp
+    if ($timestamp !== null && !isset($payloadToVerify['timestamp']) && !isset($payloadToVerify['_timestamp'])) {
+        $payloadToVerify['_timestamp'] = $timestamp;
     }
     
+    // If timestamp is in payload as 'timestamp', keep it as-is (VouchMorph format)
+    // If timestamp is in payload as '_timestamp', keep it as-is (internal format)
+    
     $payloadJson = json_encode($payloadToVerify);
+    
+    error_log("Verifying signature against payload: " . $payloadJson);
     
     // Verify RSA signature using openssl
     $result = openssl_verify(
