@@ -25,14 +25,7 @@ try {
         }
     }
     
-    // Remove timestamp fields from payload (verify_signature will add _timestamp back)
-    if (isset($payloadToVerify['timestamp'])) {
-        unset($payloadToVerify['timestamp']);
-    }
-    if (isset($payloadToVerify['_timestamp'])) {
-        unset($payloadToVerify['_timestamp']);
-    }
-    
+
     error_log("SACCUSSALIS HOLD: Verifying payload: " . json_encode($payloadToVerify));
     error_log("SACCUSSALIS HOLD: Signature: " . substr($signature, 0, 50) . "...");
     error_log("SACCUSSALIS HOLD: Timestamp: " . $timestamp);
