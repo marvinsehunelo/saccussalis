@@ -5,8 +5,9 @@
 header('Content-Type: application/json');
 require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
-// Get parameters from GET request
+// Get parameters from GET request or POST
 $type = $_GET['type'] ?? $_POST['type'] ?? 'wallet'; // 'wallet' or 'account'
 $identifier = $_GET['identifier'] ?? $_POST['identifier'] ?? null; // phone number or account number
 $signature = $_GET['signature'] ?? $_SERVER['HTTP_X_SIGNATURE'] ?? null;
@@ -23,10 +24,42 @@ if (!$identifier) {
 }
 
 // ============================================================
-// VERIFY SIGNATURE (Optional for balance queries)
+// VERIFY WITH CERTIFICATE OR SIGNATURE
 // ============================================================
 $signatureVerified = false;
-if ($signature) {
+$verificationMethod = 'none';
+
+// Try to get certificate from request body (for POST with JSON)
+$input = json_decode(file_get_contents('php://input'), true);
+$certificate = $input['certificate'] ?? null;
+
+// Method 1: Certificate-based verification (preferred)
+if ($certificate) {
+    $certManager = new CertificateManager('SACCUSSALIS');
+    
+    // Create a verification payload
+    $verifyRequest = [
+        'certificate' => $certificate,
+        'signature' => $signature,
+        'requester' => $requester,
+        'timestamp' => $timestamp,
+        'type' => $type,
+        'identifier' => $identifier
+    ];
+    
+    $verification = $certManager->verifySignedRequest($verifyRequest);
+    $signatureVerified = $verification['verified'];
+    $requester = $verification['requester'] ?? $requester;
+    $verificationMethod = 'certificate';
+    
+    if ($signatureVerified) {
+        error_log("SACCUSSALIS BALANCE: Certificate verified from {$requester}");
+    } else {
+        error_log("SACCUSSALIS BALANCE: Certificate verification failed from {$requester}: " . ($verification['message'] ?? 'Unknown'));
+    }
+}
+// Method 2: Legacy signature verification (backward compatible)
+else if ($signature) {
     $payloadToVerify = [
         'type' => $type,
         'identifier' => $identifier
@@ -34,12 +67,15 @@ if ($signature) {
     $publicKey = get_requester_public_key($requester, $pdo);
     if ($publicKey) {
         $signatureVerified = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+        $verificationMethod = 'legacy_signature';
         if ($signatureVerified) {
-            error_log("SACCUSSALIS BALANCE: Signature verified from {$requester}");
+            error_log("SACCUSSALIS BALANCE: Legacy signature verified from {$requester}");
         } else {
-            error_log("SACCUSSALIS BALANCE: Invalid signature from {$requester}");
+            error_log("SACCUSSALIS BALANCE: Invalid legacy signature from {$requester}");
         }
     }
+} else {
+    error_log("SACCUSSALIS BALANCE: No verification provided from {$requester}");
 }
 
 try {
@@ -69,7 +105,8 @@ try {
             http_response_code(404);
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Wallet not found for phone: ' . $identifier
+                'message' => 'Wallet not found for phone: ' . $identifier,
+                'timestamp' => time()
             ]);
             exit;
         }
@@ -78,7 +115,8 @@ try {
             http_response_code(403);
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Wallet is frozen'
+                'message' => 'Wallet is frozen',
+                'timestamp' => time()
             ]);
             exit;
         }
@@ -116,7 +154,8 @@ try {
             http_response_code(404);
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Account not found for number: ' . $identifier
+                'message' => 'Account not found for number: ' . $identifier,
+                'timestamp' => time()
             ]);
             exit;
         }
@@ -125,7 +164,8 @@ try {
             http_response_code(403);
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Account is not active'
+                'message' => 'Account is not active',
+                'timestamp' => time()
             ]);
             exit;
         }
@@ -147,22 +187,24 @@ try {
         http_response_code(400);
         echo json_encode([
             'status' => 'error',
-            'message' => 'Invalid type. Use "wallet" or "account"'
+            'message' => 'Invalid type. Use "wallet" or "account"',
+            'timestamp' => time()
         ]);
         exit;
     }
 
-    // Add requester and signature verification info
+    // Add verification info
     $responseData['requester'] = $requester;
     $responseData['signature_verified'] = $signatureVerified;
+    $responseData['verification_method'] = $verificationMethod;
 
     // ============================================================
-    // SEND SIGNED RESPONSE (Optional for queries but recommended)
+    // SEND SIGNED RESPONSE (if verification was provided)
     // ============================================================
-    if ($signature && $signatureVerified) {
+    if ($signatureVerified || $verificationMethod === 'certificate') {
         send_signed_response($responseData);
     } else {
-        // If no signature provided, still return data but without signature
+        // If no verification provided or verification failed, still return data but without signature
         echo json_encode($responseData);
     }
 
