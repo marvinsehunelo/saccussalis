@@ -1,8 +1,8 @@
 <?php
 // backend/api/v1/test_cert.php
 
-require_once __DIR__ . '/../../db.php';
-require_once __DIR__ . '/../../helpers/CertificateManager.php';
+require_once '/app/backend/db.php';
+require_once '/app/backend/helpers/CertificateManager.php';
 
 header('Content-Type: application/json');
 
