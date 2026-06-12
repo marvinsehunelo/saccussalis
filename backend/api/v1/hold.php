@@ -24,7 +24,6 @@ try {
             $payloadToVerify[$key] = $value;
         }
     }
-    
 
     error_log("SACCUSSALIS HOLD: Verifying payload: " . json_encode($payloadToVerify));
     error_log("SACCUSSALIS HOLD: Signature: " . substr($signature, 0, 50) . "...");
@@ -54,9 +53,8 @@ try {
         exit;
     }
 
-    // In hold.php, after getting $publicKey
-test_key_mismatch($payloadToVerify, $signature, $publicKey);
-
+    // Fixed: Lingering standalone function call removed to prevent fatal crash.
+    // The internal audit trail inside verify_signature now handles this automatically.
     $isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
 
     if (!$isValid) {
@@ -230,7 +228,8 @@ test_key_mismatch($payloadToVerify, $signature, $publicKey);
                 held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0)
             WHERE wallet_id = ?
         ");
-        $stmt->execute([$amount, $amount, $wallet['wallet_id']]);
+        $inputAmount = $amount > 0 ? $amount : $hold['amount'];
+        $stmt->execute([$inputAmount, $inputAmount, $wallet['wallet_id']]);
 
         $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'DEBITED', debited_at = NOW(), debited_by = ? WHERE id = ?");
         $stmt->execute([$requester, $hold['id']]);
