@@ -2,8 +2,8 @@
 // Place this as backend/api/v1/test_signature_debug.php on Saccussalis
 // Call it from VouchMorph to debug
 
-require_once __DIR__ . '/../../db.php';
-require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/../helpers/crypto.php';
 
 header('Content-Type: application/json');
 
