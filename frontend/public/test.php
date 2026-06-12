@@ -1,164 +1,206 @@
 <?php
-// Place this as backend/api/v1/test_signature_debug.php on Saccussalis
-// Call it from VouchMorph to debug
+// Place at: backend/api/v1/openssl_diagnostic.php
 
-require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/../helpers/crypto.php';
+header('Content-Type: text/plain');
 
-header('Content-Type: application/json');
+echo "========== OPENSSL RSA SIGNATURE DIAGNOSTIC ==========\n\n";
 
-try {
-    $rawInput = file_get_contents('php://input');
-    $input = json_decode($rawInput, true);
-    
-    error_log("\n\n========== SIGNATURE DEBUG TOOL ==========");
-    error_log("Raw Input: " . $rawInput);
-    
-    $signature = $input['signature'] ?? null;
-    $requester = $input['requester'] ?? 'VOUCHMORPH';
-    $timestamp = $input['timestamp'] ?? null;
-    
-    // Get the public key
-    $publicKey = get_requester_public_key($requester, $pdo);
-    
-    if (!$publicKey) {
-        echo json_encode(['error' => 'Public key not found']);
-        exit;
-    }
-    
-    // Remove signature for verification
-    $payloadToVerify = $input;
-    unset($payloadToVerify['signature']);
-    
-    $results = [];
-    
-    // TEST 1: VouchMorph's likely method (no sorting, no modification)
-    $json1 = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    $sig1 = base64_decode($signature);
-    $result1 = openssl_verify($json1, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 1: No sorting, raw payload'] = [
-        'json' => $json1,
-        'result' => $result1 === 1 ? 'VALID' : ($result1 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json1)
-    ];
-    
-    // TEST 2: Sorted keys
-    $sorted = $payloadToVerify;
-    ksort($sorted);
-    $json2 = json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    $result2 = openssl_verify($json2, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 2: Sorted keys'] = [
-        'json' => $json2,
-        'result' => $result2 === 1 ? 'VALID' : ($result2 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json2)
-    ];
-    
-    // TEST 3: With _timestamp instead of timestamp
-    $withUnderscore = $payloadToVerify;
-    if (isset($withUnderscore['timestamp'])) {
-        $withUnderscore['_timestamp'] = $withUnderscore['timestamp'];
-        unset($withUnderscore['timestamp']);
-    }
-    $json3 = json_encode($withUnderscore, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    $result3 = openssl_verify($json3, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 3: _timestamp instead of timestamp'] = [
-        'json' => $json3,
-        'result' => $result3 === 1 ? 'VALID' : ($result3 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json3)
-    ];
-    
-    // TEST 4: Numbers as strings
-    $asStrings = $payloadToVerify;
-    foreach ($asStrings as $key => $value) {
-        if (is_int($value) || is_float($value)) {
-            $asStrings[$key] = (string)$value;
-        }
-    }
-    $json4 = json_encode($asStrings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    $result4 = openssl_verify($json4, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 4: Numbers as strings'] = [
-        'json' => $json4,
-        'result' => $result4 === 1 ? 'VALID' : ($result4 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json4)
-    ];
-    
-    // TEST 5: Without any timestamp
-    $noTimestamp = $payloadToVerify;
-    unset($noTimestamp['timestamp']);
-    unset($noTimestamp['_timestamp']);
-    $json5 = json_encode($noTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    $result5 = openssl_verify($json5, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 5: No timestamp field'] = [
-        'json' => $json5,
-        'result' => $result5 === 1 ? 'VALID' : ($result5 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json5)
-    ];
-    
-    // TEST 6: Without spaces in JSON (compact vs pretty)
-    $json6 = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
-    $result6 = openssl_verify($json6, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
-    $results['Method 6: JSON_PRESERVE_ZERO_FRACTION'] = [
-        'json' => $json6,
-        'result' => $result6 === 1 ? 'VALID' : ($result6 === 0 ? 'INVALID' : 'ERROR'),
-        'json_length' => strlen($json6)
-    ];
-    
-    // Display the public key fingerprint for reference
-    $fingerprint = hash('sha256', $publicKey);
-    
-    $response = [
-        'public_key_fingerprint' => $fingerprint,
-        'public_key_preview' => substr($publicKey, 0, 100) . '...',
-        'signature_preview' => substr($signature, 0, 50) . '...',
-        'timestamp' => $timestamp,
-        'server_time' => time(),
-        'test_results' => $results,
-        'recommendation' => ''
-    ];
-    
-    // Find if any method worked
-    $anyValid = false;
-    foreach ($results as $method => $data) {
-        if ($data['result'] === 'VALID') {
-            $anyValid = true;
-            $response['recommendation'] = "✓ Method works: $method";
-            $response['working_json'] = $data['json'];
-            break;
-        }
-    }
-    
-    if (!$anyValid) {
-        $response['recommendation'] = "NO METHOD WORKS - Keys definitely don't match or signature generation is different";
-        
-        // Let's also test if the public key can even verify anything
-        // Create a test signature ourselves
-        $testPayload = ['test' => 'data', 'timestamp' => time()];
-        $testJson = json_encode($testPayload);
-        
-        // Try to sign with our private key (if available)
-        $privateKey = getenv('SACCUSSALIS_PRIVATE_KEY');
-        if ($privateKey) {
-            $privateKey = str_replace(['\\n', '\n'], "\n", $privateKey);
-            $privKey = openssl_pkey_get_private($privateKey);
-            if ($privKey) {
-                $testSig = '';
-                openssl_sign($testJson, $testSig, $privKey, OPENSSL_ALGO_SHA256);
-                $testSigB64 = base64_encode($testSig);
-                
-                // Now verify with our public key
-                $testVerify = openssl_verify($testJson, $testSig, $publicKey, OPENSSL_ALGO_SHA256);
-                $response['self_test'] = [
-                    'can_verify_own_signature' => $testVerify === 1,
-                    'public_key_works_for_self_signing' => $testVerify === 1
-                ];
-                
-                openssl_free_key($privKey);
-            }
-        }
-    }
-    
-    echo json_encode($response, JSON_PRETTY_PRINT);
-    
-} catch (Exception $e) {
-    echo json_encode(['error' => $e->getMessage()]);
+// Get the raw input from VouchMorph
+$rawInput = file_get_contents('php://input');
+$input = json_decode($rawInput, true);
+
+if (!$input) {
+    echo "ERROR: No input received or invalid JSON\n";
+    echo "Raw input: " . substr($rawInput, 0, 500) . "\n";
+    exit;
 }
+
+echo "1. RAW INPUT RECEIVED:\n";
+echo substr($rawInput, 0, 1000) . "\n\n";
+
+// Get the public key
+$publicKey = getenv('VOUCHMORPH_PUBLIC_KEY');
+if (!$publicKey) {
+    echo "ERROR: VOUCHMORPH_PUBLIC_KEY not found in environment\n";
+    exit;
+}
+
+// Clean the public key
+$publicKey = str_replace(['\\n', '\n'], "\n", $publicKey);
+echo "2. PUBLIC KEY (first 200 chars):\n";
+echo substr($publicKey, 0, 200) . "...\n\n";
+
+// Load public key and get details
+$keyResource = openssl_pkey_get_public($publicKey);
+if ($keyResource === false) {
+    echo "ERROR: Cannot load public key: " . openssl_error_string() . "\n";
+    exit;
+}
+
+$keyDetails = openssl_pkey_get_details($keyResource);
+echo "3. PUBLIC KEY DETAILS:\n";
+echo "   - Bits: " . ($keyDetails['bits'] ?? 'unknown') . "\n";
+echo "   - Type: " . ($keyDetails['type'] ?? 'unknown') . "\n";
+echo "   - Key format: " . (strpos($publicKey, 'BEGIN RSA PUBLIC KEY') !== false ? 'PKCS#1' : 'PKCS#8 (standard)') . "\n\n";
+
+// Get signature
+$signature = $input['signature'] ?? $input['mac'] ?? null;
+if (!$signature) {
+    echo "ERROR: No signature/mac field found in input\n";
+    echo "Available fields: " . implode(', ', array_keys($input)) . "\n";
+    exit;
+}
+
+$decodedSig = base64_decode($signature);
+echo "4. SIGNATURE DETAILS:\n";
+echo "   - Base64 length: " . strlen($signature) . "\n";
+echo "   - Decoded length: " . strlen($decodedSig) . " bytes\n";
+echo "   - Expected RSA length: " . ($keyDetails['bits'] / 8) . " bytes\n\n";
+
+// Prepare payload (remove signature field)
+$payloadToVerify = $input;
+unset($payloadToVerify['signature']);
+unset($payloadToVerify['mac']);
+
+echo "5. TESTING DIFFERENT PAYLOAD VARIATIONS:\n\n";
+
+// Variation A: Original as-is (no sorting, original order)
+$jsonA = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$resultA = openssl_verify($jsonA, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "A) Original order, no sorting:\n";
+echo "   JSON: " . $jsonA . "\n";
+echo "   Result: " . ($resultA === 1 ? "✓ VALID" : ($resultA === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// Variation B: Sorted keys
+$sorted = $payloadToVerify;
+ksort($sorted);
+$jsonB = json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$resultB = openssl_verify($jsonB, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "B) Sorted keys alphabetically:\n";
+echo "   JSON: " . $jsonB . "\n";
+echo "   Result: " . ($resultB === 1 ? "✓ VALID" : ($resultB === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// Variation C: With _timestamp instead of timestamp
+$withUnderscore = $payloadToVerify;
+if (isset($withUnderscore['timestamp'])) {
+    $withUnderscore['_timestamp'] = $withUnderscore['timestamp'];
+    unset($withUnderscore['timestamp']);
+}
+ksort($withUnderscore);
+$jsonC = json_encode($withUnderscore, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$resultC = openssl_verify($jsonC, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "C) _timestamp instead of timestamp:\n";
+echo "   JSON: " . $jsonC . "\n";
+echo "   Result: " . ($resultC === 1 ? "✓ VALID" : ($resultC === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// Variation D: Numbers as strings (no quotes in JSON)
+$asStrings = $payloadToVerify;
+array_walk_recursive($asStrings, function(&$value) {
+    if (is_int($value) || is_float($value)) {
+        $value = (string)$value;
+    }
+});
+ksort($asStrings);
+$jsonD = json_encode($asStrings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$resultD = openssl_verify($jsonD, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "D) Numbers as strings:\n";
+echo "   JSON: " . $jsonD . "\n";
+echo "   Result: " . ($resultD === 1 ? "✓ VALID" : ($resultD === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// Variation E: Without timestamp entirely
+$noTimestamp = $payloadToVerify;
+unset($noTimestamp['timestamp']);
+unset($noTimestamp['_timestamp']);
+ksort($noTimestamp);
+$jsonE = json_encode($noTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$resultE = openssl_verify($jsonE, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "E) No timestamp field:\n";
+echo "   JSON: " . $jsonE . "\n";
+echo "   Result: " . ($resultE === 1 ? "✓ VALID" : ($resultE === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// Variation F: Using JSON_PRESERVE_ZERO_FRACTION (keeps .0 on integers)
+$jsonF = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+$resultF = openssl_verify($jsonF, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+echo "F) With JSON_PRESERVE_ZERO_FRACTION:\n";
+echo "   JSON: " . $jsonF . "\n";
+echo "   Result: " . ($resultF === 1 ? "✓ VALID" : ($resultF === 0 ? "✗ INVALID" : "ERROR: " . openssl_error_string())) . "\n\n";
+
+// ============================================
+// NOW TEST IF WE CAN SIGN AND VERIFY OURSELVES
+// ============================================
+
+echo "========== SELF-TEST: Can we sign and verify with our own keys? ==========\n\n";
+
+// Get our private key
+$privateKeyContent = getenv('SACCUSSALIS_PRIVATE_KEY');
+if ($privateKeyContent) {
+    $privateKeyContent = str_replace(['\\n', '\n'], "\n", $privateKeyContent);
+    $privateKey = openssl_pkey_get_private($privateKeyContent);
+    
+    if ($privateKey) {
+        // Create a test payload
+        $testPayload = [
+            'action' => 'TEST',
+            'reference' => 'TEST_' . time(),
+            'amount' => 100,
+            'timestamp' => time()
+        ];
+        
+        ksort($testPayload);
+        $testJson = json_encode($testPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
+        // Sign with our private key
+        $testSignature = '';
+        $signSuccess = openssl_sign($testJson, $testSignature, $privateKey, OPENSSL_ALGO_SHA256);
+        $testSignatureB64 = base64_encode($testSignature);
+        
+        echo "Self-test payload JSON: " . $testJson . "\n";
+        echo "Signature created: " . substr($testSignatureB64, 0, 50) . "...\n";
+        echo "Sign success: " . ($signSuccess ? "YES" : "NO") . "\n";
+        
+        // Verify with our public key
+        $verifyResult = openssl_verify($testJson, $testSignature, $keyResource, OPENSSL_ALGO_SHA256);
+        echo "Self-test verify result: " . ($verifyResult === 1 ? "✓ VALID" : ($verifyResult === 0 ? "✗ INVALID" : "ERROR")) . "\n";
+        
+        if ($verifyResult === 1) {
+            echo "\n✓ GOOD NEWS: Your own key pair works correctly!\n";
+            echo "  The problem is VouchMorph is using a DIFFERENT key pair.\n";
+        } else {
+            echo "\n✗ BAD NEWS: Your own key pair doesn't even work!\n";
+            echo "  The keys in your environment are corrupted.\n";
+        }
+        
+        openssl_free_key($privateKey);
+    }
+}
+
+// ============================================
+// DIAGNOSTIC SUMMARY AND RECOMMENDATION
+// ============================================
+
+echo "\n========== SUMMARY & RECOMMENDATION ==========\n";
+
+if ($resultA === 1 || $resultB === 1 || $resultC === 1 || $resultD === 1 || $resultE === 1 || $resultF === 1) {
+    echo "✓✓✓ A VARIATION WORKED! ✓✓✓\n\n";
+    if ($resultA === 1) echo "  → Use Method A (original order, no sorting)\n";
+    if ($resultB === 1) echo "  → Use Method B (sorted keys)\n";
+    if ($resultC === 1) echo "  → Use Method C (_timestamp instead of timestamp)\n";
+    if ($resultD === 1) echo "  → Use Method D (numbers as strings)\n";
+    if ($resultE === 1) echo "  → Use Method E (no timestamp)\n";
+    if ($resultF === 1) echo "  → Use Method F (JSON_PRESERVE_ZERO_FRACTION)\n";
+} else {
+    echo "✗ NO VARIATION WORKED\n\n";
+    echo "This confirms the issue is NOT payload formatting.\n";
+    echo "The problem is ONE of these:\n\n";
+    echo "1. KEY MISMATCH - VouchMorph is using a different private key\n";
+    echo "   → Solution: Exchange new public keys with VouchMorph\n\n";
+    echo "2. WRONG SIGNATURE ALGORITHM - VouchMorph might be using:\n";
+    echo "   → RSASSA-PSS instead of PKCS#1 v1.5\n";
+    echo "   → SHA384 or SHA512 instead of SHA256\n";
+    echo "   → Raw RSA without hashing\n\n";
+    echo "3. DIFFERENT ENCODING - VouchMorph might be:\n";
+    echo "   → Using DER encoding instead of raw signature\n";
+    echo "   → Adding ASN.1 headers to the signature\n\n";
+}
+
+openssl_free_key($keyResource);
