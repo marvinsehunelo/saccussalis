@@ -130,20 +130,16 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
         $publicKey = "-----BEGIN PUBLIC KEY-----\n" . implode("\n", $chunks) . "\n-----END PUBLIC KEY-----";
     }
     
-    // DO NOT ALPHABETIZE SORTS (ksort removed). 
-    // We preserve the natural received array insertion sequence from the raw request stream.
+    // Setup our payload data structures
     $payloadToVerify = $payload;
-    
     if ($timestamp !== null && !isset($payloadToVerify['timestamp']) && !isset($payloadToVerify['_timestamp'])) {
         $payloadToVerify['_timestamp'] = $timestamp;
     }
     
-    // Render JSON matching raw payload string layout styles
+    // Attempt 1: Verify using the payload exactly as provided
     $payloadJson = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    error_log("Verifying signature (Attempt 1 - Natural Types): " . $payloadJson);
     
-    error_log("Verifying signature against payload: " . $payloadJson);
-    
-    // Verify RSA signature using openssl
     $result = openssl_verify(
         $payloadJson,
         base64_decode($signature),
@@ -151,10 +147,40 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
         OPENSSL_ALGO_SHA256
     );
     
-    $isValid = ($result === 1);
-    error_log("RSA Signature verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+    // If Attempt 1 succeeds, return immediately
+    if ($result === 1) {
+        error_log("RSA Signature verification: VALID ✓ (via Natural Types)");
+        return true;
+    }
     
-    if ($result === -1) {
+    // Attempt 2: Type Normalization Fallback (Convert integers/floats to strings)
+    // This addresses variations where VouchMorph treats numbers as strings during key signing
+    error_log("Attempt 1 failed. Running Attempt 2 with string-normalized types...");
+    
+    $normalizedPayload = [];
+    foreach ($payloadToVerify as $key => $value) {
+        if (is_scalar($value) && !is_bool($value)) {
+            // Force values like 100 or 4 to become "100" and "4"
+            $normalizedPayload[$key] = (string)$value;
+        } else {
+            $normalizedPayload[$key] = $value;
+        }
+    }
+    
+    $fallbackJson = json_encode($normalizedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    error_log("Verifying signature (Attempt 2 - Normalized Strings): " . $fallbackJson);
+    
+    $fallbackResult = openssl_verify(
+        $fallbackJson,
+        base64_decode($signature),
+        $publicKey,
+        OPENSSL_ALGO_SHA256
+    );
+    
+    $isValid = ($fallbackResult === 1);
+    error_log("RSA Signature verification: " . ($isValid ? "VALID ✓ (via String Normalization)" : "INVALID ✗"));
+    
+    if ($fallbackResult === -1) {
         error_log("Signature verification error: " . openssl_error_string());
     }
     
