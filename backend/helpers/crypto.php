@@ -68,7 +68,10 @@ function sign_payload($payload, $privateKey = null)
     
     $timestamp = time();
     $payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
-    $payloadJson = json_encode($payloadWithTimestamp);
+    
+    // Standardize outbound format: Sort keys alphabetically
+    ksort($payloadWithTimestamp);
+    $payloadJson = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     
     // Generate RSA signature
     $signature = '';
@@ -112,7 +115,7 @@ function send_signed_response($payload, $httpCode = 200)
 
 /**
  * Verify incoming RSA signature from requester
- * Handles both 'timestamp' (VouchMorph) and '_timestamp' (internal) formats
+ * Handles key reconstruction and standardized sorting algorithms
  */
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
@@ -122,18 +125,29 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
         return false;
     }
     
-    // Determine which payload to verify
+    // Fix public key format if it's arriving as a broken or flat space-separated layout
+    $publicKey = trim($publicKey);
+    if (strpos($publicKey, "\n") === false) {
+        error_log("crypto.php: Reconstructing flat key block from DB layout...");
+        // Strip out brackets and flat inline spaces
+        $cleanBody = str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----', ' ', "\r", "\n"], '', $publicKey);
+        // Re-wrap body strings cleanly at exactly 64 character blocks
+        $chunks = str_split($cleanBody, 64);
+        $publicKey = "-----BEGIN PUBLIC KEY-----\n" . implode("\n", $chunks) . "\n-----END PUBLIC KEY-----";
+    }
+    
+    // Establish standard verification payload configuration
     $payloadToVerify = $payload;
     
-    // If timestamp was provided separately and not already in payload, add as _timestamp
     if ($timestamp !== null && !isset($payloadToVerify['timestamp']) && !isset($payloadToVerify['_timestamp'])) {
         $payloadToVerify['_timestamp'] = $timestamp;
     }
     
-    // If timestamp is in payload as 'timestamp', keep it as-is (VouchMorph format)
-    // If timestamp is in payload as '_timestamp', keep it as-is (internal format)
+    // Sort keys alphabetically to perfectly match outbound engine models
+    ksort($payloadToVerify);
     
-    $payloadJson = json_encode($payloadToVerify);
+    // Render standardized JSON matching raw HTTP parameters without escaping characters
+    $payloadJson = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     
     error_log("Verifying signature against payload: " . $payloadJson);
     
