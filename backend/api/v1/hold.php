@@ -11,22 +11,13 @@ try {
     error_log("=== SACCUSSALIS HOLD.PHP RECEIVED === " . json_encode($input));
 
     // ============================================================
-    // VERIFY INCOMING SIGNATURE
+    // VERIFY INCOMING SIGNATURE - FIXED VERSION
     // ============================================================
     $signature = $input['signature'] ?? null;
     $timestamp = $input['timestamp'] ?? null;
     $requester = $input['requester'] ?? 'VOUCHMORPH';
 
-    // Remove signature only - keep everything else
-    $payloadToVerify = [];
-    foreach ($input as $key => $value) {
-        if ($key !== 'signature') {
-            $payloadToVerify[$key] = $value;
-        }
-    }
-
-    error_log("SACCUSSALIS HOLD: Verifying payload: " . json_encode($payloadToVerify));
-    error_log("SACCUSSALIS HOLD: Signature: " . substr($signature, 0, 50) . "...");
+    error_log("SACCUSSALIS HOLD: Verifying signature from {$requester}");
     error_log("SACCUSSALIS HOLD: Timestamp: " . $timestamp);
 
     if (!$signature) {
@@ -53,12 +44,61 @@ try {
         exit;
     }
 
-    // Fixed: Lingering standalone function call removed to prevent fatal crash.
-    // The internal audit trail inside verify_signature now handles this automatically.
-    $isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+    // Clean and prepare payload for verification
+    // Based on test results: TESTS 2,3,4,5,7 passed - need to remove 'requester' and sort keys
+    $payloadToVerify = $input;
+
+    // Remove fields that are NOT part of the signature
+    unset($payloadToVerify['signature']);  // The signature itself
+    unset($payloadToVerify['requester']);   // Added by VouchMorph AFTER signing (TEST 2 proved this)
+
+    // Sort keys alphabetically (TEST 3 proved this is required)
+    ksort($payloadToVerify);
+
+    // Convert to JSON with consistent formatting (TEST 4,5 proved this works)
+    $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    error_log("SACCUSSALIS HOLD: Verifying against JSON: " . $jsonToVerify);
+
+    // Decode signature from base64
+    $decodedSig = base64_decode($signature);
+    if ($decodedSig === false) {
+        error_log("SACCUSSALIS HOLD: Invalid base64 signature");
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'debited' => false,
+            'message' => 'Invalid signature format'
+        ]);
+        exit;
+    }
+
+    // Clean and load public key
+    $cleanPublicKey = str_replace(['\\n', '\n'], "\n", $publicKey);
+    $pubKeyResource = openssl_pkey_get_public($cleanPublicKey);
+
+    if (!$pubKeyResource) {
+        error_log("SACCUSSALIS HOLD: Failed to load public key: " . openssl_error_string());
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'debited' => false,
+            'message' => 'Public key configuration error'
+        ]);
+        exit;
+    }
+
+    // Verify the signature
+    $verifyResult = openssl_verify($jsonToVerify, $decodedSig, $pubKeyResource, OPENSSL_ALGO_SHA256);
+    $isValid = ($verifyResult === 1);
+
+    // Free resource (PHP 8+ handles automatically, but safe to call)
+    if (function_exists('openssl_free_key')) {
+        openssl_free_key($pubKeyResource);
+    }
 
     if (!$isValid) {
-        error_log("SACCUSSALIS HOLD: Invalid signature from {$requester}");
+        error_log("SACCUSSALIS HOLD: Invalid signature from {$requester} (openssl result: {$verifyResult})");
         echo json_encode([
             'status' => 'ERROR',
             'hold_placed' => false,
