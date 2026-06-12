@@ -115,88 +115,83 @@ function send_signed_response($payload, $httpCode = 200)
 
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
-    error_log("=================================================");
-    error_log("=== CRYPTO.PHP SIGNATURE DIAGNOSTIC ACTIVE ===");
-    error_log("=================================================");
+    // ... Keep your existing setup / public key formatting blocks up top ...
 
-    // 1. Check Replay Attack Window
-    if ($timestamp && abs(time() - $timestamp) > $maxAgeSeconds) {
-        error_log("DIAGNOSTIC: Rejected - timestamp expired (age: " . abs(time() - $timestamp) . "s)");
-        return false;
-    }
-    
-    // 2. Format Public Key
-    $publicKey = trim($publicKey);
-    if (strpos($publicKey, "\n") === false) {
-        $cleanBody = str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----', ' ', "\r", "\n"], '', $publicKey);
-        $chunks = str_split($cleanBody, 64);
-        $publicKey = "-----BEGIN PUBLIC KEY-----\n" . implode("\n", $chunks) . "\n-----END PUBLIC KEY-----";
-    }
-
-    // 3. Inspect Raw Input Stream directly from the network wire
     $rawStream = file_get_contents('php://input');
-    error_log("DIAGNOSTIC - RAW HTTP STREAM: " . $rawStream);
-
     $streamDecoded = json_decode($rawStream, true) ?? [];
     
-    // Build combinations to test systematically
     $testPayloads = [];
 
-    // Combination A: Raw parsed input payload exactly as passed into function
+    // --- Core Sub-Layout Testing ---
+    if (!empty($streamDecoded)) {
+        // Variant 1: Pure transactional structure (Omitting peripheral lookup fields)
+        $testPayloads['F) Core Transaction Fields Only'] = [
+            "action"                  => $streamDecoded['action'] ?? null,
+            "reference"               => $streamDecoded['reference'] ?? null,
+            "asset_type"              => $streamDecoded['asset_type'] ?? null,
+            "amount"                  => isset($streamDecoded['amount']) ? (int)$streamDecoded['amount'] : null,
+            "currency"                => $streamDecoded['currency'] ?? null,
+            "hold_reason"             => $streamDecoded['hold_reason'] ?? null,
+            "destination_institution" => $streamDecoded['destination_institution'] ?? null,
+            "expiry"                  => $streamDecoded['expiry'] ?? null,
+            "timestamp"               => isset($streamDecoded['timestamp']) ? (int)$streamDecoded['timestamp'] : null,
+            "asset_id"                => isset($streamDecoded['asset_id']) ? (int)$streamDecoded['asset_id'] : null,
+            "requester"               => $streamDecoded['requester'] ?? null
+        ];
+
+        // Variant 2: Pure transactional structure with String-cast numbers
+        $testPayloads['G) Core Transaction Fields Only (Strings)'] = [
+            "action"                  => $streamDecoded['action'] ?? null,
+            "reference"               => $streamDecoded['reference'] ?? null,
+            "asset_type"              => $streamDecoded['asset_type'] ?? null,
+            "amount"                  => isset($streamDecoded['amount']) ? (string)$streamDecoded['amount'] : null,
+            "currency"                => $streamDecoded['currency'] ?? null,
+            "hold_reason"             => $streamDecoded['hold_reason'] ?? null,
+            "destination_institution" => $streamDecoded['destination_institution'] ?? null,
+            "expiry"                  => $streamDecoded['expiry'] ?? null,
+            "timestamp"               => isset($streamDecoded['timestamp']) ? (string)$streamDecoded['timestamp'] : null,
+            "asset_id"                => isset($streamDecoded['asset_id']) ? (string)$streamDecoded['asset_id'] : null,
+            "requester"               => $streamDecoded['requester'] ?? null
+        ];
+
+        // Variant 3: Baseline Minimalist Ledger Hold Layout
+        $testPayloads['H) Minimal Hold Signature Block'] = [
+            "action"      => $streamDecoded['action'] ?? null,
+            "reference"   => $streamDecoded['reference'] ?? null,
+            "asset_id"    => isset($streamDecoded['asset_id']) ? (int)$streamDecoded['asset_id'] : null,
+            "amount"      => isset($streamDecoded['amount']) ? (int)$streamDecoded['amount'] : null,
+            "currency"    => $streamDecoded['currency'] ?? null,
+            "timestamp"   => isset($streamDecoded['timestamp']) ? (int)$streamDecoded['timestamp'] : null
+        ];
+    }
+
+    // Keep attempts A, B, C, D, E underneath so we have total visibility
     $testPayloads['A) Passed Payload (Natural)'] = $payload;
 
-    // Combination B: Passed payload with all scalar values normalized to strings
-    $normPayload = [];
-    foreach ($payload as $k => $v) {
-        $normPayload[$k] = (is_scalar($v) && !is_bool($v)) ? (string)$v : $v;
-    }
-    $testPayloads['B) Passed Payload (String Normalized)'] = $normPayload;
-
-    // Combination C: Alphabetized version of the passed payload
-    $alphaPayload = $payload;
-    ksort($alphaPayload);
-    $testPayloads['C) Passed Payload (Alphabetical ksort)'] = $alphaPayload;
-
-    // Combination D: Raw Network Input Stream minus the signature key (Most likely candidate)
-    if (!empty($streamDecoded)) {
-        $streamMinusSig = $streamDecoded;
-        unset($streamMinusSig['signature']);
-        $testPayloads['D) Raw Stream (Minus Signature Key)'] = $streamMinusSig;
-        
-        // Combination E: Alphabetized Network Input Stream minus signature
-        $alphaStream = $streamMinusSig;
-        ksort($alphaStream);
-        $testPayloads['E) Raw Stream (Alphabetical ksort, Minus Signature)'] = $alphaStream;
-    }
-
-    // 4. Run calculations across all variants to find the valid structure
     $decodedSig = base64_decode($signature);
     $finalSuccess = false;
     $winningStrategy = "";
 
     foreach ($testPayloads as $strategyName => $payloadVariant) {
-        // Run verification test
-        $jsonStr = json_encode($payloadVariant, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        
-        $result = openssl_verify($jsonStr, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
-        $checkStatus = ($result === 1) ? "VALID ✓✓✓" : "INVALID ✗";
-        
-        error_log("STRATEGY TEST -> {$strategyName}");
-        error_log("  ↳ Content: " . $jsonStr);
-        error_log("  ↳ Status:  " . $checkStatus);
+        // Clean out nulls if any keys weren't present
+        $payloadVariant = array_filter($payloadVariant, function($v) { return !is_null($v); });
 
-        if ($result === 1 && !$finalSuccess) {
+        $jsonStr = json_encode($payloadVariant, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $result = openssl_verify($jsonStr, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
+        
+        if ($result === 1) {
+            error_log("→ STRATEGY MATCHED: {$strategyName} ✓✓✓");
+            error_log("→ Content: " . $jsonStr);
             $finalSuccess = true;
             $winningStrategy = $strategyName;
+            break;
         }
     }
 
     if ($finalSuccess) {
-        error_log("SUCCESS: Winning match found via [{$winningStrategy}]!");
         return true;
     }
 
-    error_log("CRITICAL: All signature combinations failed. Inspect the layout matching patterns above.");
-    error_log("=================================================");
+    error_log("CRITICAL DIAGNOSTIC: All combinations (including structural sub-filtering) failed.");
     return false;
 }
