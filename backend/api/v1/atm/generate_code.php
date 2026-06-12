@@ -3,7 +3,7 @@
 // generate_code.php
 // SAT Instrument Generator for SACCUSSALIS
 // ALIGNED with SwapService expectations
-// WITH SIGNATURE VERIFICATION
+// WITH CERTIFICATE-BASED VERIFICATION
 // --------------------------------------------------
 
 header('Content-Type: application/json');
@@ -12,12 +12,13 @@ error_reporting(E_ALL);
 
 require_once '../../../db.php';
 require_once '../../../helpers/crypto.php';
+require_once '../../../helpers/CertificateManager.php';
 
-function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatureVerified): array
+function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatureVerified, string $verificationMethod): array
 {
     try {
         error_log("SACCUSSALIS generate_code.php received from: {$requester}");
-        error_log("Signature verified: " . ($signatureVerified ? 'YES' : 'NO'));
+        error_log("Verification method: {$verificationMethod}, Verified: " . ($signatureVerified ? 'YES' : 'NO'));
         error_log("Payload: " . json_encode($payload));
         
         $pdo->beginTransaction();
@@ -128,7 +129,9 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 wallet_id,
                 requester,
                 signature_verified,
-                created_at
+                verification_method,
+                created_at,
+                updated_at
             )
             VALUES (
                 :phone,
@@ -138,6 +141,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 :wallet_id,
                 :requester,
                 :sig_verified,
+                :verification_method,
+                NOW(),
                 NOW()
             )
             RETURNING instrument_id
@@ -148,7 +153,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             ':amount' => $amount,
             ':wallet_id' => $walletId,
             ':requester' => $requester,
-            ':sig_verified' => $signatureVerified ? 1 : 0
+            ':sig_verified' => $signatureVerified ? 1 : 0,
+            ':verification_method' => $verificationMethod
         ]);
 
         $instrumentId = $stmt->fetchColumn();
@@ -176,7 +182,9 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 code_hash,
                 requester,
                 signature_verified,
-                created_at
+                verification_method,
+                created_at,
+                updated_at
             )
             VALUES (
                 :instrument_id,
@@ -191,6 +199,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 :code_hash,
                 :requester,
                 :sig_verified,
+                :verification_method,
+                NOW(),
                 NOW()
             )
             RETURNING sat_id
@@ -205,7 +215,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             ':expires_at'    => $expiresAt,
             ':code_hash'     => $codeHash,
             ':requester'     => $requester,
-            ':sig_verified'  => $signatureVerified ? 1 : 0
+            ':sig_verified'  => $signatureVerified ? 1 : 0,
+            ':verification_method' => $verificationMethod
         ]);
 
         $satId = $stmt->fetchColumn();
@@ -220,8 +231,10 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 status,
                 requester,
                 signature_verified,
+                verification_method,
                 notes,
-                created_at
+                created_at,
+                updated_at
             )
             VALUES (
                 :user_id,
@@ -231,7 +244,9 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 'COMPLETED',
                 :requester,
                 :sig_verified,
+                :verification_method,
                 :notes,
+                NOW(),
                 NOW()
             )
         ");
@@ -242,7 +257,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             'source_institution' => $sourceInstitution,
             'source_hold_reference' => $sourceHoldReference,
             'source_asset_type' => $sourceAssetType,
-            'code_hash' => $codeHash
+            'code_hash' => $codeHash,
+            'verification_method' => $verificationMethod
         ]);
         
         $stmt->execute([
@@ -251,10 +267,13 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             ':amount' => $amount,
             ':requester' => $requester,
             ':sig_verified' => $signatureVerified ? 1 : 0,
+            ':verification_method' => $verificationMethod,
             ':notes' => $notes
         ]);
 
         $pdo->commit();
+
+        error_log("SACCUSSALIS SAT: Generated SAT {$satNumber} for amount {$amount}, Instrument ID: {$instrumentId}");
 
         // Return format expected by GenericBankClient/SwapService
         return [
@@ -274,6 +293,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             'expiry' => $expiresAt,
             'requester' => $requester,
             'signature_verified' => $signatureVerified,
+            'verification_method' => $verificationMethod,
             'metadata' => [
                 'wallet_id' => $walletId,
                 'user_id' => $userId,
@@ -313,61 +333,44 @@ if (!$payload) {
 }
 
 // ============================================================
-// VERIFY INCOMING SIGNATURE
+// CERTIFICATE-BASED VERIFICATION (REQUIRED)
 // ============================================================
-$signature = $payload['signature'] ?? null;
-$timestamp = $payload['timestamp'] ?? null;
-$requester = $payload['requester'] ?? 'VOUCHMORPH';
 
-$payloadToVerify = [
-    'beneficiary_phone' => $payload['beneficiary_phone'] ?? null,
-    'amount' => $payload['amount'] ?? null,
-    'reference' => $payload['reference'] ?? null,
-    'source_institution' => $payload['source_institution'] ?? null
-];
-$payloadToVerify = array_filter($payloadToVerify);
-
-if (!$signature) {
-    error_log("SACCUSSALIS SAT: Missing signature from {$requester}");
+if (!isset($payload['certificate'])) {
+    error_log("SACCUSSALIS SAT: No certificate provided");
     echo json_encode([
         'success' => false,
         'token_generated' => false,
-        'error' => 'Missing signature - SAT generation must be signed'
+        'error' => 'Certificate required - please upgrade to certificate-based authentication'
     ]);
     exit;
 }
 
-$publicKey = get_requester_public_key($requester, $pdo);
+$certManager = new CertificateManager('SACCUSSALIS');
+$verification = $certManager->verifySignedRequest($payload);
+$isValid = $verification['verified'];
+$requester = $verification['requester'];
 
-if (!$publicKey) {
-    error_log("SACCUSSALIS SAT: No public key for requester: {$requester}");
-    echo json_encode([
-        'success' => false,
-        'token_generated' => false,
-        'error' => "No public key found for requester: {$requester}"
-    ]);
-    exit;
-}
-
-$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+error_log("SACCUSSALIS SAT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+error_log("SACCUSSALIS SAT: Requester: {$requester}");
 
 if (!$isValid) {
-    error_log("SACCUSSALIS SAT: Invalid signature from {$requester}");
+    error_log("SACCUSSALIS SAT: Certificate verification failed");
     echo json_encode([
         'success' => false,
         'token_generated' => false,
-        'error' => 'Invalid signature - SAT generation cannot be trusted'
+        'error' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
     ]);
     exit;
 }
 
-error_log("SACCUSSALIS SAT: Signature verified from {$requester}");
+error_log("SACCUSSALIS SAT: Request verified from {$requester} using certificate");
 
 // Execute generation with verified requester
-$result = generateSAT($pdo, $payload, $requester, $isValid);
+$result = generateSAT($pdo, $payload, $requester, $isValid, 'certificate');
 
 // ============================================================
-// SEND SIGNED RESPONSE
+// SEND SIGNED RESPONSE WITH CERTIFICATE
 // ============================================================
 if ($result['success']) {
     $responsePayload = [
@@ -380,7 +383,9 @@ if ($result['success']) {
         'currency' => $result['currency'],
         'expires_at' => $result['expires_at'],
         'requester' => $requester,
-        'signature_verified' => $isValid
+        'signature_verified' => $isValid,
+        'verification_method' => 'certificate',
+        'timestamp' => time()
     ];
     send_signed_response($responsePayload);
 } else {
