@@ -1,10 +1,5 @@
 <?php
-// src/Infrastructure/Crypto/CertificateManager.php
-// Place this in your Saccussalis project
-
-namespace Infrastructure\Crypto;
-
-use Exception;
+// backend/helpers/CertificateManager.php
 
 /**
  * Certificate Manager - Visa/Mastercard style PKI
@@ -54,7 +49,6 @@ class CertificateManager
     
     /**
      * Verify a certificate against the trusted CA root
-     * This works for ANY member's certificate - no pre-configuration needed!
      */
     public function verifyCertificate(string $certificatePem): bool
     {
@@ -116,8 +110,7 @@ class CertificateManager
     }
     
     /**
-     * Verify a signed request from ANY member using their certificate
-     * No pre-configuration needed - certificate is in the request
+     * Verify a signed request using certificate
      */
     public function verifySignedRequest(array $request): array
     {
@@ -126,25 +119,21 @@ class CertificateManager
         $requester = $request['requester'] ?? 'UNKNOWN';
         
         if (!$certificate) {
-            error_log("CertificateManager: No certificate in request from {$requester}");
             return ['verified' => false, 'message' => 'No certificate provided', 'requester' => $requester];
         }
         
         if (!$signature) {
-            error_log("CertificateManager: No signature in request from {$requester}");
             return ['verified' => false, 'message' => 'No signature provided', 'requester' => $requester];
         }
         
-        // Step 1: Verify the certificate chains to our trusted CA
+        // Step 1: Verify certificate chains to trusted CA
         if (!$this->verifyCertificate($certificate)) {
-            error_log("CertificateManager: Certificate from {$requester} is not trusted");
             return ['verified' => false, 'message' => 'Certificate not trusted', 'requester' => $requester];
         }
         
-        // Step 2: Extract public key from the certificate
+        // Step 2: Extract public key from certificate
         $publicKey = $this->extractPublicKeyFromCert($certificate);
         if (!$publicKey) {
-            error_log("CertificateManager: Cannot extract public key from certificate for {$requester}");
             return ['verified' => false, 'message' => 'Cannot extract public key', 'requester' => $requester];
         }
         
@@ -158,10 +147,9 @@ class CertificateManager
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
         
-        // Step 4: Verify signature using public key from certificate
+        // Step 4: Verify signature
         $keyResource = openssl_pkey_get_public($publicKey);
         if (!$keyResource) {
-            error_log("CertificateManager: Cannot load public key for {$requester}");
             return ['verified' => false, 'message' => 'Invalid public key', 'requester' => $requester];
         }
         
@@ -178,7 +166,7 @@ class CertificateManager
     }
     
     /**
-     * Create a signed request WITH certificate attached (for outgoing requests)
+     * Create signed request with certificate (for outgoing)
      */
     public function createSignedRequest(array $payload, string $requester): array
     {
@@ -191,7 +179,6 @@ class CertificateManager
         $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
         ksort($payloadWithTimestamp);
         
-        // Sign with private key
         $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $signature = '';
         $keyResource = openssl_pkey_get_private($this->myPrivateKey);
@@ -207,10 +194,5 @@ class CertificateManager
     public function isConfigured(): bool
     {
         return ($this->caCert !== null && $this->myPrivateKey !== null && $this->myCertificate !== null);
-    }
-    
-    public function getCACertificate(): ?string
-    {
-        return $this->caCert;
     }
 }
