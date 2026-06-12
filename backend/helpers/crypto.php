@@ -292,3 +292,53 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
     
     return false;
 }
+// Add this temporary function to crypto.php
+
+function test_key_mismatch($payload, $signature, $publicKey)
+{
+    error_log("\n========== KEY MISMATCH DIAGNOSTIC ==========");
+    
+    // Load the public key
+    $key = openssl_pkey_get_public($publicKey);
+    if ($key === false) {
+        error_log("ERROR: Cannot load public key");
+        return;
+    }
+    
+    // Get key details
+    $keyDetails = openssl_pkey_get_details($key);
+    error_log("Public key bits: " . ($keyDetails['bits'] ?? 'unknown'));
+    error_log("Public key type: " . ($keyDetails['type'] ?? 'unknown'));
+    
+    // Try to verify with raw signature (no payload manipulation)
+    $testPayload = $payload;
+    unset($testPayload['signature']);
+    
+    // The EXACT method VouchMorph likely uses
+    $exactPayloadJson = json_encode($testPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    error_log("Payload JSON (no sorting): " . $exactPayloadJson);
+    
+    $decodedSig = base64_decode($signature);
+    $result = openssl_verify($exactPayloadJson, $decodedSig, $key, OPENSSL_ALGO_SHA256);
+    
+    if ($result === 1) {
+        error_log("✓ SIGNATURE VERIFIES!");
+        error_log("The keys DO match!");
+    } else {
+        error_log("✗ SIGNATURE DOES NOT VERIFY");
+        error_log("This indicates the private key used to sign");
+        error_log("does NOT match the public key you have.");
+        error_log("");
+        error_log("SOLUTION:");
+        error_log("1. Get the correct public key from VouchMorph team");
+        error_log("2. Or have VouchMorph use the private key that matches");
+        error_log("   your current public key");
+        error_log("");
+        error_log("Current public key fingerprint:");
+        $fingerprint = hash('sha256', $publicKey);
+        error_log("SHA-256: " . $fingerprint);
+    }
+    
+    openssl_free_key($key);
+    error_log("========== END KEY MISMATCH DIAGNOSTIC ==========\n");
+}
