@@ -113,109 +113,182 @@ function send_signed_response($payload, $httpCode = 200)
     exit;
 }
 
-<?php
-// /SaccusSalisbank/backend/helpers/crypto.php
 
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
-    // Reject old messages (prevent replay attacks)
-    if ($timestamp && abs(time() - $timestamp) > $maxAgeSeconds) {
-        error_log("Signature rejected: timestamp too old (age: " . abs(time() - $timestamp) . "s)");
-        return false;
+    error_log("\n========== RSA SIGNATURE DIAGNOSTIC START ==========");
+    
+    // Diagnostic 1: Timestamp validation
+    error_log("[DIAG-1] Timestamp check:");
+    error_log("  - Received timestamp: " . ($timestamp ?? 'null'));
+    error_log("  - Current server time: " . time());
+    if ($timestamp) {
+        $age = abs(time() - $timestamp);
+        error_log("  - Age: {$age} seconds");
+        error_log("  - Max allowed: {$maxAgeSeconds} seconds");
+        if ($age > $maxAgeSeconds) {
+            error_log("  - RESULT: FAILED (timestamp too old)");
+            return false;
+        } else {
+            error_log("  - RESULT: PASSED");
+        }
     }
     
-    // IMPORTANT: The payload already contains ALL fields including 'timestamp'
-    // We should NOT add '_timestamp' or modify the payload in any way
-    // Just verify against the payload AS-IS
+    // Diagnostic 2: Public key format
+    error_log("\n[DIAG-2] Public key format check:");
+    error_log("  - Raw public key length: " . strlen($publicKey));
+    error_log("  - First 50 chars: " . substr($publicKey, 0, 50));
+    error_log("  - Contains BEGIN marker: " . (strpos($publicKey, '-----BEGIN PUBLIC KEY-----') !== false ? 'YES' : 'NO'));
+    error_log("  - Contains END marker: " . (strpos($publicKey, '-----END PUBLIC KEY-----') !== false ? 'YES' : 'NO'));
     
-    // Ensure the payload has the timestamp field (VouchMorph uses 'timestamp', not '_timestamp')
-    if (!isset($payload['timestamp']) && $timestamp) {
-        // Only add if missing (shouldn't happen with VouchMorph)
-        $payload['timestamp'] = $timestamp;
-    }
-    
-    // Remove signature field if it somehow got into the payload
-    unset($payload['signature']);
-    
-    // Sort keys alphabetically (important! VouchMorph likely does this)
-    ksort($payload);
-    
-    // Create JSON string with the same formatting as VouchMorph
-    // Use JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE to match common practice
-    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    
-    error_log("VERIFYING SIGNATURE WITH PAYLOAD: " . $payloadJson);
-    error_log("SIGNATURE (first 50 chars): " . substr($signature, 0, 50));
-    
-    // Decode signature from base64
-    $decodedSignature = base64_decode($signature);
-    if ($decodedSignature === false) {
-        error_log("Failed to decode signature from base64");
-        return false;
-    }
-    
-    // Load public key
-    $key = openssl_pkey_get_public($publicKey);
-    if ($key === false) {
-        error_log("Failed to load public key: " . openssl_error_string());
-        return false;
-    }
-    
-    // Verify signature
-    $result = openssl_verify($payloadJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
-    
-    // Free key resource
-    openssl_free_key($key);
-    
-    if ($result === 1) {
-        error_log("✓ SIGNATURE VALID ✓");
-        return true;
-    } elseif ($result === 0) {
-        error_log("✗ SIGNATURE INVALID ✗");
+    // Try to load the public key
+    $testKey = openssl_pkey_get_public($publicKey);
+    if ($testKey === false) {
+        error_log("  - RESULT: FAILED - Cannot load public key");
+        error_log("  - OpenSSL error: " . openssl_error_string());
         
-        // Diagnostic: Try without ksort to see if ordering is the issue
-        $payloadUnsorted = $payload;
-        unset($payloadUnsorted['signature']);
-        $payloadUnsortedJson = json_encode($payloadUnsorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $result2 = openssl_verify($payloadUnsortedJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
+        // Try to fix formatting
+        if (strpos($publicKey, '-----BEGIN') === false) {
+            $fixedKey = "-----BEGIN PUBLIC KEY-----\n" . chunk_split($publicKey, 64, "\n") . "-----END PUBLIC KEY-----";
+            error_log("  - Attempting to fix with PEM headers");
+            $testKey = openssl_pkey_get_public($fixedKey);
+            if ($testKey !== false) {
+                error_log("  - ✓ Fixed key works!");
+                $publicKey = $fixedKey;
+            } else {
+                error_log("  - Still failing after fix");
+                return false;
+            }
+        }
+    } else {
+        error_log("  - RESULT: PASSED - Public key loads successfully");
+        openssl_free_key($testKey);
+    }
+    
+    // Diagnostic 3: Signature format
+    error_log("\n[DIAG-3] Signature format check:");
+    error_log("  - Raw signature length: " . strlen($signature));
+    error_log("  - First 50 chars: " . substr($signature, 0, 50));
+    
+    $decodedSig = base64_decode($signature);
+    if ($decodedSig === false) {
+        error_log("  - RESULT: FAILED - Cannot base64 decode signature");
+        return false;
+    }
+    error_log("  - Decoded signature length: " . strlen($decodedSig));
+    error_log("  - RESULT: PASSED - Signature decodes successfully");
+    
+    // Diagnostic 4: Payload structure analysis
+    error_log("\n[DIAG-4] Payload structure:");
+    error_log("  - Original payload keys: " . implode(', ', array_keys($payload)));
+    error_log("  - Payload contains 'timestamp': " . (isset($payload['timestamp']) ? 'YES (value: ' . $payload['timestamp'] . ')' : 'NO'));
+    error_log("  - Payload contains '_timestamp': " . (isset($payload['_timestamp']) ? 'YES' : 'NO'));
+    
+    // Create payload copy for testing
+    $testPayload = $payload;
+    unset($testPayload['signature']);
+    error_log("  - Keys after removing 'signature': " . implode(', ', array_keys($testPayload)));
+    
+    // Diagnostic 5: Test all possible payload variations
+    error_log("\n[DIAG-5] Testing payload variations:");
+    
+    $variations = [];
+    $publicKeyResource = openssl_pkey_get_public($publicKey);
+    
+    // Variation A: Original payload with timestamp (no modification)
+    $variations['A) Original payload (timestamp as is)'] = $testPayload;
+    
+    // Variation B: Original payload without timestamp
+    $noTimestamp = $testPayload;
+    unset($noTimestamp['timestamp']);
+    $variations['B) Without timestamp field'] = $noTimestamp;
+    
+    // Variation C: Original payload with _timestamp instead
+    $withUnderscore = $testPayload;
+    if (isset($withUnderscore['timestamp'])) {
+        $withUnderscore['_timestamp'] = $withUnderscore['timestamp'];
+        unset($withUnderscore['timestamp']);
+    }
+    $variations['C) With _timestamp instead of timestamp'] = $withUnderscore;
+    
+    // Variation D: Only core fields (minimal)
+    $variations['D) Core fields only'] = [
+        'action' => $testPayload['action'] ?? null,
+        'reference' => $testPayload['reference'] ?? null,
+        'amount' => $testPayload['amount'] ?? null,
+        'asset_id' => $testPayload['asset_id'] ?? null,
+        'timestamp' => $testPayload['timestamp'] ?? null,
+    ];
+    
+    // Variation E: String values instead of integers
+    $stringsPayload = [];
+    foreach ($testPayload as $key => $value) {
+        if (is_int($value) || is_float($value)) {
+            $stringsPayload[$key] = (string)$value;
+        } else {
+            $stringsPayload[$key] = $value;
+        }
+    }
+    $variations['E) String-typed numbers'] = $stringsPayload;
+    
+    // Test each variation with and without sorting
+    foreach ($variations as $varName => $varPayload) {
+        // Remove null values
+        $varPayload = array_filter($varPayload, function($v) { return $v !== null; });
         
-        if ($result2 === 1) {
-            error_log("  → Actually valid WITHOUT sorting! VouchMorph may not sort keys.");
-            error_log("  → Unsorted payload: " . $payloadUnsortedJson);
+        // Test with sorting
+        $sorted = $varPayload;
+        ksort($sorted);
+        $sortedJson = json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $resultSorted = openssl_verify($sortedJson, $decodedSig, $publicKeyResource, OPENSSL_ALGO_SHA256);
+        
+        error_log("\n  {$varName}:");
+        error_log("    Sorted keys: " . ($resultSorted === 1 ? "✓ VALID" : ($resultSorted === 0 ? "✗ INVALID" : "ERROR")));
+        if ($resultSorted === 1) {
+            error_log("    ✓✓✓ MATCH FOUND! ✓✓✓");
+            error_log("    Sorted JSON: " . $sortedJson);
+            error_log("========== RSA SIGNATURE DIAGNOSTIC END ==========\n");
+            openssl_free_key($publicKeyResource);
             return true;
         }
         
-        // Diagnostic: Try with original raw input
-        $rawInput = file_get_contents('php://input');
-        $rawDecoded = json_decode($rawInput, true);
-        if ($rawDecoded && isset($rawDecoded['signature'])) {
-            unset($rawDecoded['signature']);
-            ksort($rawDecoded);
-            $rawJson = json_encode($rawDecoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            $result3 = openssl_verify($rawJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
-            
-            if ($result3 === 1) {
-                error_log("  → Actually valid with raw input (sorted)!");
-                error_log("  → Raw payload: " . $rawJson);
-                return true;
-            }
-            
-            // Try raw input without sorting
-            $rawUnsorted = $rawDecoded;
-            $rawUnsortedJson = json_encode($rawUnsorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            $result4 = openssl_verify($rawUnsortedJson, $decodedSignature, $key, OPENSSL_ALGO_SHA256);
-            
-            if ($result4 === 1) {
-                error_log("  → Actually valid with raw input (unsorted)!");
-                error_log("  → Raw unsorted payload: " . $rawUnsortedJson);
-                return true;
-            }
-        }
+        // Test without sorting
+        $unsortedJson = json_encode($varPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $resultUnsorted = openssl_verify($unsortedJson, $decodedSig, $publicKeyResource, OPENSSL_ALGO_SHA256);
         
-        error_log("  → All verification attempts failed");
-        return false;
-    } else {
-        error_log("OpenSSL verification error: " . openssl_error_string());
-        return false;
+        error_log("    Unsorted keys: " . ($resultUnsorted === 1 ? "✓ VALID" : ($resultUnsorted === 0 ? "✗ INVALID" : "ERROR")));
+        if ($resultUnsorted === 1) {
+            error_log("    ✓✓✓ MATCH FOUND! ✓✓✓");
+            error_log("    Unsorted JSON: " . $unsortedJson);
+            error_log("========== RSA SIGNATURE DIAGNOSTIC END ==========\n");
+            openssl_free_key($publicKeyResource);
+            return true;
+        }
     }
+    
+    // Diagnostic 6: If all fail, show what VouchMorph likely signed vs what we're testing
+    error_log("\n[DIAG-6] All variations failed. Showing what we tried:");
+    
+    // Get raw input for comparison
+    $rawInput = file_get_contents('php://input');
+    $rawDecoded = json_decode($rawInput, true);
+    if ($rawDecoded && isset($rawDecoded['signature'])) {
+        unset($rawDecoded['signature']);
+        $rawJson = json_encode($rawDecoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        error_log("  Raw input (as received from VouchMorph): " . $rawJson);
+    }
+    
+    error_log("\n  Our best attempt (sorted, original payload):");
+    $bestPayload = $testPayload;
+    ksort($bestPayload);
+    $bestJson = json_encode($bestPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    error_log("  " . $bestJson);
+    
+    error_log("\n  Signature we're verifying: " . $signature);
+    error_log("  Decoded signature (hex first 32 bytes): " . bin2hex(substr($decodedSig, 0, 32)));
+    
+    openssl_free_key($publicKeyResource);
+    error_log("\n========== RSA SIGNATURE DIAGNOSTIC END (ALL FAILED) ==========\n");
+    
+    return false;
 }
