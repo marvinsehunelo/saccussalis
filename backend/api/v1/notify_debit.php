@@ -3,6 +3,7 @@
 
 require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
 header('Content-Type: application/json');
 
@@ -13,55 +14,38 @@ try {
     error_log(json_encode($input));
 
     // ============================================================
-    // VERIFY INCOMING SIGNATURE
+    // CERTIFICATE-BASED VERIFICATION (REQUIRED)
     // ============================================================
-    $signature = $input['signature'] ?? null;
-    $timestamp = $input['timestamp'] ?? null;
-    $requester = $input['requester'] ?? 'VOUCHMORPH';
-
-    $payloadToVerify = [
-        'hold_reference' => $input['hold_reference'] ?? null,
-        'amount' => $input['amount'] ?? null,
-        'transaction_reference' => $input['transaction_reference'] ?? null,
-        'source_institution' => $input['source_institution'] ?? null
-    ];
-    $payloadToVerify = array_filter($payloadToVerify);
-
-    if (!$signature) {
-        error_log("SACCUSSALIS NOTIFY_DEBIT: Missing signature from {$requester}");
+    
+    if (!isset($input['certificate'])) {
+        error_log("SACCUSSALIS NOTIFY_DEBIT: No certificate provided");
         echo json_encode([
             'status' => 'ERROR',
             'debited' => false,
-            'message' => 'Missing signature - debit requests must be signed'
+            'message' => 'Certificate required - please upgrade to certificate-based authentication'
         ]);
         exit;
     }
-
-    $publicKey = get_requester_public_key($requester, $pdo);
-
-    if (!$publicKey) {
-        error_log("SACCUSSALIS NOTIFY_DEBIT: No public key for requester: {$requester}");
-        echo json_encode([
-            'status' => 'ERROR',
-            'debited' => false,
-            'message' => "No public key found for requester: {$requester}"
-        ]);
-        exit;
-    }
-
-    $isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
-
+    
+    $certManager = new CertificateManager('SACCUSSALIS');
+    $verification = $certManager->verifySignedRequest($input);
+    $isValid = $verification['verified'];
+    $requester = $verification['requester'];
+    
+    error_log("SACCUSSALIS NOTIFY_DEBIT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+    error_log("SACCUSSALIS NOTIFY_DEBIT: Requester: {$requester}");
+    
     if (!$isValid) {
-        error_log("SACCUSSALIS NOTIFY_DEBIT: Invalid signature from {$requester}");
+        error_log("SACCUSSALIS NOTIFY_DEBIT: Certificate verification failed");
         echo json_encode([
             'status' => 'ERROR',
             'debited' => false,
-            'message' => 'Invalid signature - debit request cannot be trusted'
+            'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
         ]);
         exit;
     }
-
-    error_log("SACCUSSALIS NOTIFY_DEBIT: Signature verified from {$requester}");
+    
+    error_log("SACCUSSALIS NOTIFY_DEBIT: Request verified from {$requester} using certificate");
 
     // ============================================================
     // PROCESS DEBIT
@@ -160,7 +144,7 @@ try {
     $pdo->commit();
 
     // ============================================================
-    // SEND SIGNED RESPONSE
+    // SEND SIGNED RESPONSE WITH CERTIFICATE
     // ============================================================
     $responsePayload = [
         'status' => 'SUCCESS',
