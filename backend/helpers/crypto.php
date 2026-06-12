@@ -115,74 +115,88 @@ function send_signed_response($payload, $httpCode = 200)
 
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
-    // Reject old messages (prevent replay attacks)
+    error_log("=================================================");
+    error_log("=== CRYPTO.PHP SIGNATURE DIAGNOSTIC ACTIVE ===");
+    error_log("=================================================");
+
+    // 1. Check Replay Attack Window
     if ($timestamp && abs(time() - $timestamp) > $maxAgeSeconds) {
-        error_log("Signature rejected: timestamp too old (age: " . abs(time() - $timestamp) . "s)");
+        error_log("DIAGNOSTIC: Rejected - timestamp expired (age: " . abs(time() - $timestamp) . "s)");
         return false;
     }
     
-    // Fix public key format if it's arriving as a broken or flat space-separated layout
+    // 2. Format Public Key
     $publicKey = trim($publicKey);
     if (strpos($publicKey, "\n") === false) {
-        error_log("crypto.php: Reconstructing flat key block from DB layout...");
         $cleanBody = str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----', ' ', "\r", "\n"], '', $publicKey);
         $chunks = str_split($cleanBody, 64);
         $publicKey = "-----BEGIN PUBLIC KEY-----\n" . implode("\n", $chunks) . "\n-----END PUBLIC KEY-----";
     }
+
+    // 3. Inspect Raw Input Stream directly from the network wire
+    $rawStream = file_get_contents('php://input');
+    error_log("DIAGNOSTIC - RAW HTTP STREAM: " . $rawStream);
+
+    $streamDecoded = json_decode($rawStream, true) ?? [];
     
-    // Setup our payload data structures
-    $payloadToVerify = $payload;
-    if ($timestamp !== null && !isset($payloadToVerify['timestamp']) && !isset($payloadToVerify['_timestamp'])) {
-        $payloadToVerify['_timestamp'] = $timestamp;
+    // Build combinations to test systematically
+    $testPayloads = [];
+
+    // Combination A: Raw parsed input payload exactly as passed into function
+    $testPayloads['A) Passed Payload (Natural)'] = $payload;
+
+    // Combination B: Passed payload with all scalar values normalized to strings
+    $normPayload = [];
+    foreach ($payload as $k => $v) {
+        $normPayload[$k] = (is_scalar($v) && !is_bool($v)) ? (string)$v : $v;
     }
-    
-    // Attempt 1: Verify using the payload exactly as provided
-    $payloadJson = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    error_log("Verifying signature (Attempt 1 - Natural Types): " . $payloadJson);
-    
-    $result = openssl_verify(
-        $payloadJson,
-        base64_decode($signature),
-        $publicKey,
-        OPENSSL_ALGO_SHA256
-    );
-    
-    // If Attempt 1 succeeds, return immediately
-    if ($result === 1) {
-        error_log("RSA Signature verification: VALID ✓ (via Natural Types)");
-        return true;
+    $testPayloads['B) Passed Payload (String Normalized)'] = $normPayload;
+
+    // Combination C: Alphabetized version of the passed payload
+    $alphaPayload = $payload;
+    ksort($alphaPayload);
+    $testPayloads['C) Passed Payload (Alphabetical ksort)'] = $alphaPayload;
+
+    // Combination D: Raw Network Input Stream minus the signature key (Most likely candidate)
+    if (!empty($streamDecoded)) {
+        $streamMinusSig = $streamDecoded;
+        unset($streamMinusSig['signature']);
+        $testPayloads['D) Raw Stream (Minus Signature Key)'] = $streamMinusSig;
+        
+        // Combination E: Alphabetized Network Input Stream minus signature
+        $alphaStream = $streamMinusSig;
+        ksort($alphaStream);
+        $testPayloads['E) Raw Stream (Alphabetical ksort, Minus Signature)'] = $alphaStream;
     }
-    
-    // Attempt 2: Type Normalization Fallback (Convert integers/floats to strings)
-    // This addresses variations where VouchMorph treats numbers as strings during key signing
-    error_log("Attempt 1 failed. Running Attempt 2 with string-normalized types...");
-    
-    $normalizedPayload = [];
-    foreach ($payloadToVerify as $key => $value) {
-        if (is_scalar($value) && !is_bool($value)) {
-            // Force values like 100 or 4 to become "100" and "4"
-            $normalizedPayload[$key] = (string)$value;
-        } else {
-            $normalizedPayload[$key] = $value;
+
+    // 4. Run calculations across all variants to find the valid structure
+    $decodedSig = base64_decode($signature);
+    $finalSuccess = false;
+    $winningStrategy = "";
+
+    foreach ($testPayloads as $strategyName => $payloadVariant) {
+        // Run verification test
+        $jsonStr = json_encode($payloadVariant, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
+        $result = openssl_verify($jsonStr, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
+        $checkStatus = ($result === 1) ? "VALID ✓✓✓" : "INVALID ✗";
+        
+        error_log("STRATEGY TEST -> {$strategyName}");
+        error_log("  ↳ Content: " . $jsonStr);
+        error_log("  ↳ Status:  " . $checkStatus);
+
+        if ($result === 1 && !$finalSuccess) {
+            $finalSuccess = true;
+            $winningStrategy = $strategyName;
         }
     }
-    
-    $fallbackJson = json_encode($normalizedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    error_log("Verifying signature (Attempt 2 - Normalized Strings): " . $fallbackJson);
-    
-    $fallbackResult = openssl_verify(
-        $fallbackJson,
-        base64_decode($signature),
-        $publicKey,
-        OPENSSL_ALGO_SHA256
-    );
-    
-    $isValid = ($fallbackResult === 1);
-    error_log("RSA Signature verification: " . ($isValid ? "VALID ✓ (via String Normalization)" : "INVALID ✗"));
-    
-    if ($fallbackResult === -1) {
-        error_log("Signature verification error: " . openssl_error_string());
+
+    if ($finalSuccess) {
+        error_log("SUCCESS: Winning match found via [{$winningStrategy}]!");
+        return true;
     }
-    
-    return $isValid;
+
+    error_log("CRITICAL: All signature combinations failed. Inspect the layout matching patterns above.");
+    error_log("=================================================");
+    return false;
 }
