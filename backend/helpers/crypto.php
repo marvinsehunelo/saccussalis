@@ -113,10 +113,6 @@ function send_signed_response($payload, $httpCode = 200)
     exit;
 }
 
-/**
- * Verify incoming RSA signature from requester
- * Handles key reconstruction and standardized sorting algorithms
- */
 function verify_signature($payload, $signature, $publicKey, $timestamp = null, $maxAgeSeconds = 300)
 {
     // Reject old messages (prevent replay attacks)
@@ -129,24 +125,20 @@ function verify_signature($payload, $signature, $publicKey, $timestamp = null, $
     $publicKey = trim($publicKey);
     if (strpos($publicKey, "\n") === false) {
         error_log("crypto.php: Reconstructing flat key block from DB layout...");
-        // Strip out brackets and flat inline spaces
         $cleanBody = str_replace(['-----BEGIN PUBLIC KEY-----', '-----END PUBLIC KEY-----', ' ', "\r", "\n"], '', $publicKey);
-        // Re-wrap body strings cleanly at exactly 64 character blocks
         $chunks = str_split($cleanBody, 64);
         $publicKey = "-----BEGIN PUBLIC KEY-----\n" . implode("\n", $chunks) . "\n-----END PUBLIC KEY-----";
     }
     
-    // Establish standard verification payload configuration
+    // DO NOT ALPHABETIZE SORTS (ksort removed). 
+    // We preserve the natural received array insertion sequence from the raw request stream.
     $payloadToVerify = $payload;
     
     if ($timestamp !== null && !isset($payloadToVerify['timestamp']) && !isset($payloadToVerify['_timestamp'])) {
         $payloadToVerify['_timestamp'] = $timestamp;
     }
     
-    // Sort keys alphabetically to perfectly match outbound engine models
-    ksort($payloadToVerify);
-    
-    // Render standardized JSON matching raw HTTP parameters without escaping characters
+    // Render JSON matching raw payload string layout styles
     $payloadJson = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     
     error_log("Verifying signature against payload: " . $payloadJson);
