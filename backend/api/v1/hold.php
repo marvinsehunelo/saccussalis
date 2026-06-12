@@ -1,8 +1,11 @@
 <?php
-// backend/api/v1/hold.php
+// backend/api/v1/hold.php - CERTIFICATE-BASED VERIFICATION
 
 require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../../src/Infrastructure/Crypto/CertificateManager.php';
+
+use Infrastructure\Crypto\CertificateManager;
 
 header('Content-Type: application/json');
 
@@ -11,193 +14,122 @@ try {
     error_log("=== SACCUSSALIS HOLD.PHP RECEIVED === " . json_encode($input));
 
     // ============================================================
-    // VERIFY INCOMING SIGNATURE - FIXED VERSION
+    // CERTIFICATE-BASED VERIFICATION (Visa/Mastercard Model)
     // ============================================================
-    $signature = $input['signature'] ?? null;
-    $timestamp = $input['timestamp'] ?? null;
-    $requester = $input['requester'] ?? 'VOUCHMORPH';
-
-    error_log("SACCUSSALIS HOLD: Verifying signature from {$requester}");
-    error_log("SACCUSSALIS HOLD: Timestamp: " . $timestamp);
-
-    if (!$signature) {
-        error_log("SACCUSSALIS HOLD: Missing signature from {$requester}");
-        echo json_encode([
-            'status' => 'ERROR',
-            'hold_placed' => false,
-            'debited' => false,
-            'message' => 'Missing signature - hold requests must be signed'
-        ]);
-        exit;
+    
+    $certManager = new CertificateManager('SACCUSSALIS');
+    
+    $isValid = false;
+    $requester = $input['requester'] ?? 'UNKNOWN';
+    
+    // Try certificate-based verification first (preferred)
+    if (isset($input['certificate'])) {
+        $verification = $certManager->verifySignedRequest($input);
+        $isValid = $verification['verified'];
+        $requester = $verification['requester'];
+        
+        error_log("Certificate verification result: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+        
+        if (!$isValid) {
+            echo json_encode([
+                'status' => 'ERROR',
+                'hold_placed' => false,
+                'debited' => false,
+                'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
+            ]);
+            exit;
+        }
+    } 
+    // Fallback to legacy signature verification (for backward compatibility)
+    else {
+        $signature = $input['signature'] ?? null;
+        $timestamp = $input['timestamp'] ?? null;
+        
+        if (!$signature) {
+            echo json_encode([
+                'status' => 'ERROR',
+                'hold_placed' => false,
+                'message' => 'Missing signature - no certificate provided'
+            ]);
+            exit;
+        }
+        
+        $publicKey = get_requester_public_key($requester, $pdo);
+        if (!$publicKey) {
+            echo json_encode(['status' => 'ERROR', 'message' => "No public key for {$requester}"]);
+            exit;
+        }
+        
+        $payloadToVerify = $input;
+        unset($payloadToVerify['signature']);
+        unset($payloadToVerify['requester']);
+        ksort($payloadToVerify);
+        
+        $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $decodedSig = base64_decode($signature);
+        $keyResource = openssl_pkey_get_public($publicKey);
+        
+        $isValid = (openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256) === 1);
+        
+        if (!$isValid) {
+            echo json_encode(['status' => 'ERROR', 'message' => 'Invalid signature']);
+            exit;
+        }
     }
-
-    $publicKey = get_requester_public_key($requester, $pdo);
-
-    if (!$publicKey) {
-        error_log("SACCUSSALIS HOLD: No public key for requester: {$requester}");
-        echo json_encode([
-            'status' => 'ERROR',
-            'hold_placed' => false,
-            'debited' => false,
-            'message' => "No public key found for requester: {$requester}"
-        ]);
-        exit;
-    }
-
-    // Clean and prepare payload for verification
-    // Based on test results: TESTS 2,3,4,5,7 passed - need to remove 'requester' and sort keys
-    $payloadToVerify = $input;
-
-    // Remove fields that are NOT part of the signature
-    unset($payloadToVerify['signature']);  // The signature itself
-    unset($payloadToVerify['requester']);   // Added by VouchMorph AFTER signing (TEST 2 proved this)
-
-    // Sort keys alphabetically (TEST 3 proved this is required)
-    ksort($payloadToVerify);
-
-    // Convert to JSON with consistent formatting (TEST 4,5 proved this works)
-    $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    error_log("SACCUSSALIS HOLD: Verifying against JSON: " . $jsonToVerify);
-
-    // Decode signature from base64
-    $decodedSig = base64_decode($signature);
-    if ($decodedSig === false) {
-        error_log("SACCUSSALIS HOLD: Invalid base64 signature");
-        echo json_encode([
-            'status' => 'ERROR',
-            'hold_placed' => false,
-            'debited' => false,
-            'message' => 'Invalid signature format'
-        ]);
-        exit;
-    }
-
-    // Clean and load public key
-    $cleanPublicKey = str_replace(['\\n', '\n'], "\n", $publicKey);
-    $pubKeyResource = openssl_pkey_get_public($cleanPublicKey);
-
-    if (!$pubKeyResource) {
-        error_log("SACCUSSALIS HOLD: Failed to load public key: " . openssl_error_string());
-        echo json_encode([
-            'status' => 'ERROR',
-            'hold_placed' => false,
-            'debited' => false,
-            'message' => 'Public key configuration error'
-        ]);
-        exit;
-    }
-
-    // Verify the signature
-    $verifyResult = openssl_verify($jsonToVerify, $decodedSig, $pubKeyResource, OPENSSL_ALGO_SHA256);
-    $isValid = ($verifyResult === 1);
-
-    // Free resource (PHP 8+ handles automatically, but safe to call)
-    if (function_exists('openssl_free_key')) {
-        openssl_free_key($pubKeyResource);
-    }
-
-    if (!$isValid) {
-        error_log("SACCUSSALIS HOLD: Invalid signature from {$requester} (openssl result: {$verifyResult})");
-        echo json_encode([
-            'status' => 'ERROR',
-            'hold_placed' => false,
-            'debited' => false,
-            'message' => 'Invalid signature - hold request cannot be trusted'
-        ]);
-        exit;
-    }
-
-    error_log("SACCUSSALIS HOLD: Signature verified from {$requester}");
+    
+    error_log("SACCUSSALIS HOLD: Request verified from {$requester}");
 
     // ============================================================
     // PROCESS HOLD
     // ============================================================
 
-    // Determine action - check multiple possible field names
     $action = strtoupper(trim($input['action'] ?? $input['type'] ?? 'PLACE_HOLD'));
-    
-    // Get amount - check multiple possible field names
     $amount = floatval($input['amount'] ?? $input['value'] ?? 0);
-    
-    // Get hold reference - check multiple possible field names
     $holdReference = $input['hold_reference'] ?? $input['reference'] ?? uniqid('HOLD-');
-    
-    // Map foreign bank - check multiple possible field names
     $foreignBank = $input['foreign_bank'] ?? $input['destination_institution'] ?? $input['destination'] ?? $input['beneficiary_bank'] ?? null;
+    $sessionId = trim($input['session_id'] ?? $input['reference'] ?? uniqid('SESSION-'));
     
-    // Get phone - check ALL possible field names from SwapService
-    $phone = $input['phone'] ?? 
-             $input['ewallet_phone'] ?? 
-             $input['wallet_phone'] ?? 
-             $input['claimant_phone'] ?? 
-             $input['beneficiary_phone'] ?? 
-             $input['account_phone'] ?? 
-             null;
-    
-    // Get asset-specific identifiers
+    $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
     $accountNumber = $input['account_number'] ?? null;
     $voucherNumber = $input['voucher_number'] ?? null;
     $cardNumber = $input['card_number'] ?? null;
     
-    // Log what we found
     error_log("[HOLD.PHP DEBUG] Action: $action, Amount: $amount, Phone: $phone, ForeignBank: $foreignBank");
-    error_log("[HOLD.PHP DEBUG] Asset identifiers - Account: $accountNumber, Voucher: $voucherNumber, Card: $cardNumber");
 
-    // Validate based on action type
     if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
         if (!$phone && !$accountNumber && !$voucherNumber && !$cardNumber) {
-            throw new Exception("No identifier found. Need one of: phone, ewallet_phone, wallet_phone, account_number, voucher_number, or card_number");
+            throw new Exception("No identifier found");
         }
-        
         if ($amount <= 0) {
             throw new Exception("Valid amount required");
         }
-        
         if (!$foreignBank) {
-            error_log("WARNING: foreign_bank not provided in payload");
             $foreignBank = 'UNKNOWN';
         }
     }
-
-    // Ensure session_id exists (for tracking)
-    $sessionId = trim($input['session_id'] ?? $input['reference'] ?? uniqid('SESSION-'));
     
     $pdo->beginTransaction();
 
-    // Determine which wallet to use - try phone first, then other identifiers
+    // Find wallet
     $wallet = null;
-    
     if ($phone) {
-        $stmt = $pdo->prepare("
-            SELECT wallet_id, balance, held_balance 
-            FROM wallets 
-            WHERE phone = ? AND status = 'active' AND is_frozen = false
-            FOR UPDATE
-        ");
+        $stmt = $pdo->prepare("SELECT wallet_id, balance, held_balance FROM wallets WHERE phone = ? AND status = 'active' AND is_frozen = false FOR UPDATE");
         $stmt->execute([$phone]);
         $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
     } elseif ($accountNumber) {
-        $stmt = $pdo->prepare("
-            SELECT w.wallet_id, w.balance, w.held_balance 
-            FROM wallets w
-            JOIN accounts a ON a.user_id = w.user_id
-            WHERE a.account_number = ? AND w.status = 'active' AND w.is_frozen = false
-            FOR UPDATE
-        ");
+        $stmt = $pdo->prepare("SELECT w.wallet_id, w.balance, w.held_balance FROM wallets w JOIN accounts a ON a.user_id = w.user_id WHERE a.account_number = ? AND w.status = 'active' AND w.is_frozen = false FOR UPDATE");
         $stmt->execute([$accountNumber]);
         $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
     }
     
     if (!$wallet) {
-        $identifier = $phone ?? $accountNumber ?? $voucherNumber ?? $cardNumber ?? 'unknown';
-        throw new Exception("Wallet not found or inactive/frozen for identifier: $identifier");
+        throw new Exception("Wallet not found");
     }
 
     if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
         $availableBalance = $wallet['balance'] - ($wallet['held_balance'] ?? 0);
         if ($availableBalance < $amount) {
-            throw new Exception("Insufficient available balance. Available: {$availableBalance}, Required: {$amount}");
+            throw new Exception("Insufficient available balance");
         }
 
         $stmt = $pdo->prepare("UPDATE wallets SET held_balance = COALESCE(held_balance,0) + ? WHERE wallet_id = ?");
@@ -226,18 +158,10 @@ try {
         $holdPlaced = true;
 
     } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE', 'REVERSE'])) {
-        $stmt = $pdo->prepare("
-            SELECT id, wallet_id, amount 
-            FROM financial_holds 
-            WHERE hold_reference = ? AND status = 'HELD'
-            FOR UPDATE
-        ");
+        $stmt = $pdo->prepare("SELECT id, wallet_id, amount FROM financial_holds WHERE hold_reference = ? AND status = 'HELD' FOR UPDATE");
         $stmt->execute([$holdReference]);
         $hold = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$hold) {
-            throw new Exception("Active hold not found for reference: $holdReference");
-        }
+        if (!$hold) throw new Exception("Hold not found");
 
         $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'RELEASED', released_at = NOW() WHERE id = ?");
         $stmt->execute([$hold['id']]);
@@ -249,26 +173,13 @@ try {
         $holdPlaced = false;
         
     } elseif (in_array($action, ['DEBIT_FUNDS', 'DEBIT', 'COMMIT'])) {
-        $stmt = $pdo->prepare("
-            SELECT id, wallet_id, amount 
-            FROM financial_holds 
-            WHERE hold_reference = ? AND status = 'HELD'
-            FOR UPDATE
-        ");
+        $stmt = $pdo->prepare("SELECT id, wallet_id, amount FROM financial_holds WHERE hold_reference = ? AND status = 'HELD' FOR UPDATE");
         $stmt->execute([$holdReference]);
         $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$hold) throw new Exception("Hold not found");
 
-        if (!$hold) {
-            throw new Exception("Active hold not found for reference: $holdReference");
-        }
-
-        $stmt = $pdo->prepare("
-            UPDATE wallets 
-            SET balance = balance - ?,
-                held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0)
-            WHERE wallet_id = ?
-        ");
         $inputAmount = $amount > 0 ? $amount : $hold['amount'];
+        $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0) WHERE wallet_id = ?");
         $stmt->execute([$inputAmount, $inputAmount, $wallet['wallet_id']]);
 
         $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'DEBITED', debited_at = NOW(), debited_by = ? WHERE id = ?");
@@ -313,16 +224,13 @@ try {
     }
     
     error_log("SACCUSSALIS Hold.php ERROR: " . $e->getMessage());
-    error_log("Hold.php Input: " . json_encode($input ?? []));
-
+    
     echo json_encode([
         'status' => 'ERROR',
         'hold_placed' => false,
         'debited' => false,
         'message' => 'Bank communication failed',
-        'reason' => $e->getMessage(),
-        'error_code' => $e->getCode(),
-        'timestamp' => time()
+        'reason' => $e->getMessage()
     ]);
     http_response_code(400);
 }
