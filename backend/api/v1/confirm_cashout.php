@@ -5,55 +5,41 @@ header('Content-Type: application/json');
 require_once '../../../db.php';
 require_once '../../../middleware/Idempotency.php';
 require_once '../../../helpers/crypto.php';
+require_once '../../../helpers/CertificateManager.php';
 
 $input = json_decode(file_get_contents("php://input"), true);
 
 // ============================================================
-// VERIFY INCOMING SIGNATURE
+// CERTIFICATE-BASED VERIFICATION (REQUIRED)
 // ============================================================
-$signature = $input['signature'] ?? null;
-$timestamp = $input['timestamp'] ?? null;
-$requester = $input['requester'] ?? 'VOUCHMORPH';
 
-$payloadToVerify = [
-    'hold_reference' => $input['hold_reference'] ?? null,
-    'session_id' => $input['session_id'] ?? null,
-    'foreign_atm_id' => $input['foreign_atm_id'] ?? null
-];
-$payloadToVerify = array_filter($payloadToVerify);
-
-if (!$signature) {
-    error_log("SACCUSSALIS CONFIRM_CASHOUT: Missing signature from {$requester}");
+if (!isset($input['certificate'])) {
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: No certificate provided");
     echo json_encode([
         'status' => 'error',
-        'message' => 'Missing signature - cashout confirmation must be signed'
+        'message' => 'Certificate required - please upgrade to certificate-based authentication'
     ]);
     exit;
 }
 
-$publicKey = get_requester_public_key($requester, $pdo);
+$certManager = new CertificateManager('SACCUSSALIS');
+$verification = $certManager->verifySignedRequest($input);
+$isValid = $verification['verified'];
+$requester = $verification['requester'];
 
-if (!$publicKey) {
-    error_log("SACCUSSALIS CONFIRM_CASHOUT: No public key for requester: {$requester}");
-    echo json_encode([
-        'status' => 'error',
-        'message' => "No public key found for requester: {$requester}"
-    ]);
-    exit;
-}
-
-$isValid = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
+error_log("SACCUSSALIS CONFIRM_CASHOUT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+error_log("SACCUSSALIS CONFIRM_CASHOUT: Requester: {$requester}");
 
 if (!$isValid) {
-    error_log("SACCUSSALIS CONFIRM_CASHOUT: Invalid signature from {$requester}");
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: Certificate verification failed");
     echo json_encode([
         'status' => 'error',
-        'message' => 'Invalid signature - cashout confirmation cannot be trusted'
+        'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
     ]);
     exit;
 }
 
-error_log("SACCUSSALIS CONFIRM_CASHOUT: Signature verified from {$requester}");
+error_log("SACCUSSALIS CONFIRM_CASHOUT: Request verified from {$requester} using certificate");
 
 // ============================================================
 // PROCESS CASHOUT CONFIRMATION
@@ -99,6 +85,8 @@ try {
         throw new Exception("Hold not found, expired, or already processed");
     }
 
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: Found hold ID={$hold['id']}, Amount={$hold['amount']}, Wallet ID={$hold['wallet_id']}");
+
     // 2️⃣ Validate held balance
     if ($hold['held_balance'] < $hold['amount']) {
         throw new Exception("Held balance inconsistency detected");
@@ -125,7 +113,8 @@ try {
             foreign_atm_id = ?,
             cashout_confirmed = true,
             confirmed_by = ?,
-            confirmation_signature_verified = ?
+            confirmation_signature_verified = ?,
+            updated_at = NOW()
         WHERE id = ?
     ");
     $stmt->execute([
@@ -141,7 +130,8 @@ try {
         SET status = 'CASHED_OUT', 
             cashed_out_at = NOW(),
             foreign_atm_id = ?,
-            confirmed_by = ?
+            confirmed_by = ?,
+            updated_at = NOW()
         WHERE hold_reference = ? 
         AND status = 'HELD'
     ");
@@ -157,7 +147,8 @@ try {
         SET status = 'USED',
             processing = FALSE,
             expires_at = NOW(),
-            confirmed_by = ?
+            confirmed_by = ?,
+            updated_at = NOW()
         WHERE instrument_id = (
             SELECT instrument_id 
             FROM cash_instruments 
@@ -168,7 +159,7 @@ try {
     $stmt->execute([$requester, $input['hold_reference']]);
 
     // 7️⃣ Create transaction record
-    $reference = 'CASHOUT' . time() . rand(100, 999);
+    $reference = 'CASHOUT_' . time() . '_' . rand(100, 999);
 
     $stmt = $pdo->prepare("
         INSERT INTO transactions (
@@ -191,7 +182,7 @@ try {
     ]);
 
     // 8️⃣ Create interbank claim
-    $claimRef = 'CLM' . time() . rand(1000, 9999);
+    $claimRef = 'CLM_' . time() . '_' . rand(1000, 9999);
 
     $stmt = $pdo->prepare("
         INSERT INTO interbank_claims (
@@ -208,10 +199,17 @@ try {
         $isValid ? 1 : 0
     ]);
 
+    // Get updated wallet balance
+    $stmt = $pdo->prepare("SELECT balance, held_balance FROM wallets WHERE wallet_id = ?");
+    $stmt->execute([$hold['wallet_id']]);
+    $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
+
     $pdo->commit();
 
+    error_log("SACCUSSALIS CONFIRM_CASHOUT: Cashout completed successfully - Ref: {$reference}, Claim: {$claimRef}");
+
     // ============================================================
-    // SEND SIGNED RESPONSE
+    // SEND SIGNED RESPONSE WITH CERTIFICATE
     // ============================================================
     $responsePayload = [
         'status' => 'success',
@@ -219,6 +217,9 @@ try {
         'amount' => $hold['amount'],
         'transaction_reference' => $reference,
         'claim_reference' => $claimRef,
+        'hold_reference' => $input['hold_reference'],
+        'new_balance' => $updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0),
+        'available_balance' => $updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0),
         'requester' => $requester,
         'signature_verified' => $isValid
     ];
@@ -227,14 +228,18 @@ try {
     send_signed_response($responsePayload);
 
 } catch (Exception $e) {
-    $pdo->rollBack();
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
 
-    error_log("SACCUSSALIS CONFIRM_CASHOUT error: " . $e->getMessage());
+    error_log("SACCUSSALIS CONFIRM_CASHOUT ERROR: " . $e->getMessage());
+    error_log("SACCUSSALIS CONFIRM_CASHOUT Input: " . json_encode($input ?? []));
     
     http_response_code(400);
     echo json_encode([
         'status' => 'error',
-        'message' => $e->getMessage(),
+        'message' => 'Cashout confirmation failed',
+        'reason' => $e->getMessage(),
         'timestamp' => time()
     ]);
 }
