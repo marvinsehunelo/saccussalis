@@ -1,11 +1,9 @@
 <?php
-// backend/api/v1/hold.php - CERTIFICATE-BASED VERIFICATION
+// backend/api/v1/hold.php - CERTIFICATE-ONLY VERIFICATION
 
 require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
-require_once __DIR__ . '/../../../src/Infrastructure/Crypto/CertificateManager.php';
-
-use Infrastructure\Crypto\CertificateManager;
+require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
 header('Content-Type: application/json');
 
@@ -14,97 +12,56 @@ try {
     error_log("=== SACCUSSALIS HOLD.PHP RECEIVED === " . json_encode($input));
 
     // ============================================================
-    // CERTIFICATE-BASED VERIFICATION (Visa/Mastercard Model)
+    // CERTIFICATE-BASED VERIFICATION (REQUIRED)
     // ============================================================
     
-    $certManager = new CertificateManager('SACCUSSALIS');
-    
-    $isValid = false;
-    $requester = $input['requester'] ?? 'UNKNOWN';
-    
-    // Try certificate-based verification first (preferred)
-    if (isset($input['certificate'])) {
-        $verification = $certManager->verifySignedRequest($input);
-        $isValid = $verification['verified'];
-        $requester = $verification['requester'];
-        
-        error_log("Certificate verification result: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
-        
-        if (!$isValid) {
-            echo json_encode([
-                'status' => 'ERROR',
-                'hold_placed' => false,
-                'debited' => false,
-                'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown error')
-            ]);
-            exit;
-        }
-    } 
-    // Fallback to legacy signature verification (for backward compatibility)
-    else {
-        $signature = $input['signature'] ?? null;
-        $timestamp = $input['timestamp'] ?? null;
-        
-        if (!$signature) {
-            echo json_encode([
-                'status' => 'ERROR',
-                'hold_placed' => false,
-                'message' => 'Missing signature - no certificate provided'
-            ]);
-            exit;
-        }
-        
-        $publicKey = get_requester_public_key($requester, $pdo);
-        if (!$publicKey) {
-            echo json_encode(['status' => 'ERROR', 'message' => "No public key for {$requester}"]);
-            exit;
-        }
-        
-        $payloadToVerify = $input;
-        unset($payloadToVerify['signature']);
-        unset($payloadToVerify['requester']);
-        ksort($payloadToVerify);
-        
-        $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $decodedSig = base64_decode($signature);
-        $keyResource = openssl_pkey_get_public($publicKey);
-        
-        $isValid = (openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256) === 1);
-        
-        if (!$isValid) {
-            echo json_encode(['status' => 'ERROR', 'message' => 'Invalid signature']);
-            exit;
-        }
+    if (!isset($input['certificate'])) {
+        error_log("SACCUSSALIS HOLD: No certificate provided");
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'message' => 'Certificate required'
+        ]);
+        exit;
     }
     
-    error_log("SACCUSSALIS HOLD: Request verified from {$requester}");
+    $certManager = new CertificateManager('SACCUSSALIS');
+    $verification = $certManager->verifySignedRequest($input);
+    $isValid = $verification['verified'];
+    $requester = $verification['requester'];
+    
+    error_log("Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+    
+    if (!$isValid) {
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown')
+        ]);
+        exit;
+    }
+    
+    error_log("SACCUSSALIS HOLD: Verified from {$requester}");
 
     // ============================================================
     // PROCESS HOLD
     // ============================================================
 
-    $action = strtoupper(trim($input['action'] ?? $input['type'] ?? 'PLACE_HOLD'));
-    $amount = floatval($input['amount'] ?? $input['value'] ?? 0);
+    $action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
+    $amount = floatval($input['amount'] ?? 0);
     $holdReference = $input['hold_reference'] ?? $input['reference'] ?? uniqid('HOLD-');
-    $foreignBank = $input['foreign_bank'] ?? $input['destination_institution'] ?? $input['destination'] ?? $input['beneficiary_bank'] ?? null;
+    $foreignBank = $input['foreign_bank'] ?? $input['destination_institution'] ?? 'UNKNOWN';
     $sessionId = trim($input['session_id'] ?? $input['reference'] ?? uniqid('SESSION-'));
     
     $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
     $accountNumber = $input['account_number'] ?? null;
-    $voucherNumber = $input['voucher_number'] ?? null;
-    $cardNumber = $input['card_number'] ?? null;
-    
-    error_log("[HOLD.PHP DEBUG] Action: $action, Amount: $amount, Phone: $phone, ForeignBank: $foreignBank");
 
     if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
-        if (!$phone && !$accountNumber && !$voucherNumber && !$cardNumber) {
+        if (!$phone && !$accountNumber) {
             throw new Exception("No identifier found");
         }
         if ($amount <= 0) {
             throw new Exception("Valid amount required");
-        }
-        if (!$foreignBank) {
-            $foreignBank = 'UNKNOWN';
         }
     }
     
@@ -129,7 +86,7 @@ try {
     if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
         $availableBalance = $wallet['balance'] - ($wallet['held_balance'] ?? 0);
         if ($availableBalance < $amount) {
-            throw new Exception("Insufficient available balance");
+            throw new Exception("Insufficient balance");
         }
 
         $stmt = $pdo->prepare("UPDATE wallets SET held_balance = COALESCE(held_balance,0) + ? WHERE wallet_id = ?");
@@ -153,11 +110,10 @@ try {
             $isValid ? 1 : 0
         ]);
         $holdId = $stmt->fetchColumn();
-
         $message = "Hold placed successfully";
         $holdPlaced = true;
-
-    } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE', 'REVERSE'])) {
+        
+    } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE'])) {
         $stmt = $pdo->prepare("SELECT id, wallet_id, amount FROM financial_holds WHERE hold_reference = ? AND status = 'HELD' FOR UPDATE");
         $stmt->execute([$holdReference]);
         $hold = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -192,23 +148,20 @@ try {
         throw new Exception("Unsupported action: $action");
     }
 
-    // Get updated wallet balance
+    // Get updated balance
     $stmt = $pdo->prepare("SELECT balance, held_balance FROM wallets WHERE wallet_id = ?");
     $stmt->execute([$wallet['wallet_id']]);
     $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
 
     $pdo->commit();
 
-    // ============================================================
-    // SEND SIGNED RESPONSE
-    // ============================================================
+    // Send response
     $responsePayload = [
         'status' => 'SUCCESS',
-        'hold_placed' => isset($holdPlaced) ? $holdPlaced : ($action === 'DEBIT_FUNDS' ? false : true),
+        'hold_placed' => $holdPlaced ?? true,
         'hold_reference' => $holdReference,
         'session_id' => $sessionId,
         'message' => $message,
-        'debited' => $action === 'DEBIT_FUNDS',
         'new_balance' => $updatedWallet['balance'] - $updatedWallet['held_balance'],
         'held_balance' => $updatedWallet['held_balance'],
         'available_balance' => $updatedWallet['balance'] - $updatedWallet['held_balance'],
@@ -228,7 +181,6 @@ try {
     echo json_encode([
         'status' => 'ERROR',
         'hold_placed' => false,
-        'debited' => false,
         'message' => 'Bank communication failed',
         'reason' => $e->getMessage()
     ]);
