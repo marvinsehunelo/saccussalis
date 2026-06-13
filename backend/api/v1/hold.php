@@ -5,7 +5,20 @@ require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
 require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
+// Increase memory and buffer limits for large responses
+ini_set('memory_limit', '512M');
+ini_set('output_buffering', '4096');
+ini_set('zlib.output_compression', 'On');
+ini_set('zlib.output_compression_level', '6');
+
 header('Content-Type: application/json');
+header('Content-Encoding: gzip'); // Enable compression for large responses
+
+// Disable output buffering to prevent truncation
+if (ob_get_level()) {
+    ob_end_clean();
+}
+ob_start();
 
 try {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -155,7 +168,7 @@ try {
 
     $pdo->commit();
 
-    // Send response - CRITICAL: Cast numeric values to float (not string)
+    // Build response payload
     $responsePayload = [
         'status' => 'SUCCESS',
         'hold_placed' => $holdPlaced ?? true,
@@ -169,13 +182,14 @@ try {
         'signature_verified' => $isValid
     ];
     
+    // Log the response before signing
+    error_log("SACCUSSALIS HOLD: Response payload before signing: " . json_encode($responsePayload));
+    
+    // Send signed response (certificate will be added automatically)
     send_signed_response($responsePayload);
-
-    // Add this right before send_signed_response
-error_log("RESPONSE WITH SIGNATURE: " . json_encode(array_merge($responsePayload, [
-    'signature' => 'PRESENT',
-    'timestamp' => time()
-])));
+    
+    // Log after sending
+    error_log("SACCUSSALIS HOLD: Response sent successfully");
 
 } catch (Exception $e) {
     if (isset($pdo) && $pdo->inTransaction()) {
@@ -184,11 +198,18 @@ error_log("RESPONSE WITH SIGNATURE: " . json_encode(array_merge($responsePayload
     
     error_log("SACCUSSALIS Hold.php ERROR: " . $e->getMessage());
     
-    echo json_encode([
+    $errorResponse = [
         'status' => 'ERROR',
         'hold_placed' => false,
         'message' => 'Bank communication failed',
         'reason' => $e->getMessage()
-    ]);
+    ];
+    
+    echo json_encode($errorResponse);
     http_response_code(400);
+} finally {
+    // Ensure output is flushed
+    if (ob_get_length() !== false) {
+        ob_end_flush();
+    }
 }
