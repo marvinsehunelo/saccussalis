@@ -155,16 +155,17 @@ try {
 
     $pdo->commit();
 
-    // Send response
+    // Send response - CRITICAL: Cast numeric values to float (not string)
+    // This ensures the response matches what was signed
     $responsePayload = [
         'status' => 'SUCCESS',
         'hold_placed' => $holdPlaced ?? true,
         'hold_reference' => $holdReference,
         'session_id' => $sessionId,
         'message' => $message,
-        'new_balance' => $updatedWallet['balance'] - $updatedWallet['held_balance'],
-        'held_balance' => $updatedWallet['held_balance'],
-        'available_balance' => $updatedWallet['balance'] - $updatedWallet['held_balance'],
+        'new_balance' => (float)($updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0)),
+        'held_balance' => (float)($updatedWallet['held_balance'] ?? 0),
+        'available_balance' => (float)($updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0)),
         'requester' => $requester,
         'signature_verified' => $isValid
     ];
@@ -185,4 +186,4 @@ try {
         'reason' => $e->getMessage()
     ]);
     http_response_code(400);
-}
+}'
