@@ -156,7 +156,6 @@ try {
     $pdo->commit();
 
     // Send response - CRITICAL: Cast numeric values to float (not string)
-    // This ensures the response matches what was signed
     $responsePayload = [
         'status' => 'SUCCESS',
         'hold_placed' => $holdPlaced ?? true,
@@ -186,4 +185,4 @@ try {
         'reason' => $e->getMessage()
     ]);
     http_response_code(400);
-}'
+}
