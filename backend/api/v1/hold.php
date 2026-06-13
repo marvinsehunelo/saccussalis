@@ -171,6 +171,12 @@ try {
     
     send_signed_response($responsePayload);
 
+    // Add this right before send_signed_response
+error_log("RESPONSE WITH SIGNATURE: " . json_encode(array_merge($responsePayload, [
+    'signature' => 'PRESENT',
+    'timestamp' => time()
+])));
+
 } catch (Exception $e) {
     if (isset($pdo) && $pdo->inTransaction()) {
         $pdo->rollBack();
