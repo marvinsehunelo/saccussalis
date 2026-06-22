@@ -5,19 +5,14 @@ require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
 require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
-// Increase memory and buffer limits for large responses
-ini_set('memory_limit', '512M');
-ini_set('output_buffering', '4096');
-ini_set('zlib.output_compression', 'On');
-ini_set('zlib.output_compression_level', '6');
-
 header('Content-Type: application/json');
-header('Content-Encoding: gzip');
+
+// Disable gzip compression to avoid encoding issues
+ini_set('zlib.output_compression', 'Off');
 
 if (ob_get_level()) {
     ob_end_clean();
 }
-ob_start();
 
 try {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -67,26 +62,39 @@ try {
     
     // ============================================================
     // CHECK FOR PIN - This is a column in ewallet_pins table
+    // Check multiple possible field names
     // ============================================================
     $pin = $input['pin'] ?? $input['atm_pin'] ?? $input['atm_code'] ?? $input['cashout_pin'] ?? null;
     
     // Asset type determines which table to use
     $assetType = strtoupper($input['asset_type'] ?? 'WALLET');
     
+    // ============================================================
+    // AUTO-DETECT PIN: If pin is present, force asset_type to PIN
+    // ============================================================
+    if ($pin && !empty($pin)) {
+        $assetType = 'PIN';
+        error_log("HOLD: Auto-detected PIN asset. PIN: " . substr($pin, -4));
+    }
+    
     $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
     $accountNumber = $input['account_number'] ?? null;
     
-    error_log("HOLD: asset_type=$assetType, pin=" . ($pin ? substr($pin, -4) : 'null'));
+    error_log("HOLD: asset_type=$assetType, pin=" . ($pin ? substr($pin, -4) : 'null') . ", action=$action");
+    
+    // Check if PDO is available
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Database connection not available");
+    }
     
     $pdo->beginTransaction();
 
     // ============================================================
-    // DETECT: If PIN is provided, handle as PIN VOUCHER hold
+    // HANDLE PIN VOUCHER HOLDS (ewallet_pins table)
+    // This runs when a PIN is provided (regardless of asset_type)
     // ============================================================
     if ($pin && !empty($pin)) {
-        // ============================================================
-        // HANDLE PIN VOUCHER HOLDS (ewallet_pins table)
-        // ============================================================
+        error_log("HOLD: Processing PIN hold for PIN: " . substr($pin, -4));
         
         if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
             // Place hold on PIN voucher
@@ -106,6 +114,8 @@ try {
                 throw new Exception("PIN not found, already redeemed, expired, or currently on hold");
             }
             
+            error_log("PIN found: id={$pinRecord['id']}, amount={$pinRecord['amount']}, hold_status={$pinRecord['hold_status']}");
+            
             if ($amount > 0 && $pinRecord['amount'] < $amount) {
                 throw new Exception("PIN has insufficient value. Available: {$pinRecord['amount']}, Requested: $amount");
             }
@@ -122,6 +132,8 @@ try {
                 WHERE id = ?
             ");
             $stmt->execute([$holdReference, $requester, $pinRecord['id']]);
+            
+            error_log("PIN hold_status updated to true for id={$pinRecord['id']}");
             
             // Log the hold
             $stmt = $pdo->prepare("
@@ -166,6 +178,8 @@ try {
                 WHERE id = ?
             ");
             $stmt->execute([$pinRecord['id']]);
+            
+            error_log("PIN hold_status updated to false for id={$pinRecord['id']}");
             
             // Log the release
             $stmt = $pdo->prepare("
@@ -216,6 +230,8 @@ try {
             ");
             $stmt->execute([$requester, $pinRecord['id']]);
             
+            error_log("PIN redeemed: id={$pinRecord['id']}, is_redeemed=true, hold_status=false");
+            
             // Log the debit
             $stmt = $pdo->prepare("
                 UPDATE pin_hold_logs 
@@ -240,6 +256,8 @@ try {
         // ============================================================
         // HANDLE WALLET HOLDS (Original logic)
         // ============================================================
+        
+        error_log("HOLD: Processing WALLET hold");
         
         if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
             if (!$phone && !$accountNumber) {
@@ -358,7 +376,8 @@ try {
     
     error_log("HOLD: Response payload: " . json_encode($responsePayload));
     
-    send_signed_response($responsePayload);
+    // Send response without gzip
+    echo json_encode($responsePayload);
 
 } catch (Exception $e) {
     if (isset($pdo) && $pdo->inTransaction()) {
@@ -366,18 +385,15 @@ try {
     }
     
     error_log("Hold.php ERROR: " . $e->getMessage());
+    error_log("Hold.php TRACE: " . $e->getTraceAsString());
     
     $errorResponse = [
         'status' => 'ERROR',
         'hold_placed' => false,
-        'message' => 'Bank communication failed',
+        'message' => $e->getMessage(),
         'reason' => $e->getMessage()
     ];
     
     echo json_encode($errorResponse);
     http_response_code(400);
-} finally {
-    if (ob_get_length() !== false) {
-        ob_end_flush();
-    }
 }
