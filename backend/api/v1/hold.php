@@ -74,7 +74,7 @@ try {
     // ============================================================
     if ($pin && !empty($pin)) {
         $assetType = 'PIN';
-        error_log("HOLD: Auto-detected PIN asset. PIN: " . substr($pin, -4));
+        error_log("HOLD: Auto-detected PIN voucher. PIN: " . substr($pin, -4));
     }
     
     $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
@@ -94,7 +94,7 @@ try {
     // This runs when a PIN is provided (regardless of asset_type)
     // ============================================================
     if ($pin && !empty($pin)) {
-        error_log("HOLD: Processing PIN hold for PIN: " . substr($pin, -4));
+        error_log("HOLD: Processing PIN voucher hold for PIN: " . substr($pin, -4));
         
         if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
             // Place hold on PIN voucher
@@ -122,6 +122,7 @@ try {
             
             // ============================================================
             // UPDATE hold_status = true ON THE PIN ROW
+            // This is the key operation - placing the hold on the PIN voucher
             // ============================================================
             $stmt = $pdo->prepare("
                 UPDATE ewallet_pins 
@@ -372,6 +373,8 @@ try {
     // Include PIN in response if it was used
     if ($pin && !empty($pin)) {
         $responsePayload['pin'] = $pin;
+        $responsePayload['hold_status'] = true;
+        $responsePayload['hold_reference'] = $holdReference;
     }
     
     error_log("HOLD: Response payload: " . json_encode($responsePayload));
