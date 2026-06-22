@@ -1,256 +1,383 @@
 <?php
-/**
- * verify_asset.php - SACCUSSALIS VERSION with PIN HOLD checking
- * Asset verification that checks both wallet balances and PIN status
- */
+// backend/api/v1/hold.php - CERTIFICATE-ONLY VERIFICATION with PIN HOLD support
 
 require_once __DIR__ . '/../../db.php';
+require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
-header("Content-Type: application/json");
+// Increase memory and buffer limits for large responses
+ini_set('memory_limit', '512M');
+ini_set('output_buffering', '4096');
+ini_set('zlib.output_compression', 'On');
+ini_set('zlib.output_compression_level', '6');
 
-error_log("=== verify_asset.php CALLED ===");
-error_log("RAW POST: " . file_get_contents("php://input"));
+header('Content-Type: application/json');
+header('Content-Encoding: gzip');
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode([
-        "success" => false,
-        "verified" => false, 
-        "message" => "Method not allowed"
-    ]);
-    exit;
+if (ob_get_level()) {
+    ob_end_clean();
 }
-
-$input = json_decode(file_get_contents("php://input"), true);
-error_log("Parsed input: " . json_encode($input));
-
-$assetType = strtoupper($input['asset_type'] ?? $input['type'] ?? $input['source']['asset_type'] ?? '');
-$phone = $input['wallet_phone'] ?? $input['ewallet_phone'] ?? $input['phone'] ?? $input['source']['ewallet']['ewallet_phone'] ?? $input['source']['phone'] ?? null;
-$pin = $input['pin'] ?? $input['source']['pin'] ?? null;
-$amount = floatval($input['amount'] ?? $input['value'] ?? 0);
-$reference = $input['reference'] ?? $input['transaction_reference'] ?? null;
-
-error_log("Normalized - Type: $assetType, Phone: $phone, PIN: $pin, Amount: $amount");
-
-// SACCUSSALIS handles BANK-WALLET, ACCOUNT, and PIN asset types
-if ($assetType !== 'BANK-WALLET' && $assetType !== 'ACCOUNT' && $assetType !== 'PIN') {
-    error_log("ERROR: Unsupported asset type: $assetType");
-    echo json_encode([
-        "success" => true,
-        "verified" => false,
-        "message" => "Unsupported asset type. Supported: BANK-WALLET, ACCOUNT, PIN",
-        "debug" => ["received_type" => $assetType]
-    ]);
-    exit;
-}
+ob_start();
 
 try {
-    if (!isset($pdo)) {
-        throw new Exception("Database connection failed to initialize.");
+    $input = json_decode(file_get_contents('php://input'), true);
+    error_log("=== HOLD.PHP RECEIVED === " . json_encode($input));
+
+    // ============================================================
+    // CERTIFICATE-BASED VERIFICATION (REQUIRED)
+    // ============================================================
+    
+    if (!isset($input['certificate'])) {
+        error_log("HOLD: No certificate provided");
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'message' => 'Certificate required'
+        ]);
+        exit;
     }
-
-    $verified = false;
-    $assetId = null;
-    $availableBalance = 0;
-    $holderName = null;
-    $expiryDate = null;
-    $metadata = [];
+    
+    $certManager = new CertificateManager('SACCUSSALIS');
+    $verification = $certManager->verifySignedRequest($input);
+    $isValid = $verification['verified'];
+    $requester = $verification['requester'];
+    
+    error_log("Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
+    
+    if (!$isValid) {
+        echo json_encode([
+            'status' => 'ERROR',
+            'hold_placed' => false,
+            'message' => 'Certificate verification failed: ' . ($verification['message'] ?? 'Unknown')
+        ]);
+        exit;
+    }
+    
+    error_log("HOLD: Verified from {$requester}");
 
     // ============================================================
-    // HANDLE PIN ASSET TYPE (with hold checking)
+    // PROCESS HOLD (Supports both WALLET and PIN VOUCHER)
     // ============================================================
-    if ($assetType === 'PIN') {
-        if (empty($pin)) {
-            throw new Exception("PIN number required for PIN asset type");
-        }
 
-        // Check PIN - MUST NOT be redeemed OR on hold
-        $stmt = $pdo->prepare("
-            SELECT 
-                id,
-                pin,
-                amount,
-                sat_purchased,
-                is_redeemed,
-                hold_status,
-                hold_reference,
-                held_at,
-                held_by,
-                expires_at,
-                created_at,
-                sender_phone,
-                recipient_phone
-            FROM ewallet_pins 
-            WHERE pin = :pin 
-            AND is_redeemed = false
-            AND (expires_at IS NULL OR expires_at > NOW())
-            LIMIT 1
-        ");
-        $stmt->execute(['pin' => $pin]);
-        $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+    $action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
+    $amount = floatval($input['amount'] ?? 0);
+    $holdReference = $input['hold_reference'] ?? $input['reference'] ?? uniqid('HOLD-');
+    $foreignBank = $input['foreign_bank'] ?? $input['destination_institution'] ?? 'UNKNOWN';
+    $sessionId = trim($input['session_id'] ?? $input['reference'] ?? uniqid('SESSION-'));
+    
+    // ============================================================
+    // CHECK FOR PIN - This is a column in ewallet_pins table
+    // ============================================================
+    $pin = $input['pin'] ?? $input['atm_pin'] ?? $input['atm_code'] ?? $input['cashout_pin'] ?? null;
+    
+    // Asset type determines which table to use
+    $assetType = strtoupper($input['asset_type'] ?? 'WALLET');
+    
+    $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
+    $accountNumber = $input['account_number'] ?? null;
+    
+    error_log("HOLD: asset_type=$assetType, pin=" . ($pin ? substr($pin, -4) : 'null'));
+    
+    $pdo->beginTransaction();
 
-        if (!$pinRecord) {
-            throw new Exception("PIN not found, already redeemed, or expired");
-        }
-
-        // Check if PIN is on hold
-        if ($pinRecord['hold_status'] == true) {
-            error_log("PIN is on hold: {$pinRecord['hold_reference']} held by {$pinRecord['held_by']}");
-            throw new Exception("PIN is currently on hold. Hold reference: {$pinRecord['hold_reference']}");
-        }
-
-        // Check if amount requested is available
-        if ($amount > 0 && $pinRecord['amount'] < $amount) {
-            throw new Exception("PIN has insufficient value. Available: {$pinRecord['amount']}, Requested: $amount");
-        }
-
-        $verified = true;
-        $assetId = $pinRecord['id'];
-        $availableBalance = (float)$pinRecord['amount'];
-        $holderName = "PIN Holder - " . ($pinRecord['recipient_phone'] ?? $pinRecord['sender_phone'] ?? 'Unknown');
-        $expiryDate = $pinRecord['expires_at'];
+    // ============================================================
+    // DETECT: If PIN is provided, handle as PIN VOUCHER hold
+    // ============================================================
+    if ($pin && !empty($pin)) {
+        // ============================================================
+        // HANDLE PIN VOUCHER HOLDS (ewallet_pins table)
+        // ============================================================
         
-        $metadata = [
-            "pin_id" => $pinRecord['id'],
-            "pin" => $pinRecord['pin'],
-            "sat_purchased" => $pinRecord['sat_purchased'],
-            "created_at" => $pinRecord['created_at'],
-            "sender_phone" => $pinRecord['sender_phone'],
-            "recipient_phone" => $pinRecord['recipient_phone'],
-            "hold_status" => $pinRecord['hold_status'],
-            "asset_type" => "PIN"
-        ];
-        
-        error_log("PIN verified successfully: ID={$pinRecord['id']}, Balance={$pinRecord['amount']}");
+        if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
+            // Place hold on PIN voucher
+            $stmt = $pdo->prepare("
+                SELECT id, pin, amount, sat_purchased, is_redeemed, hold_status, 
+                       held_by, hold_reference, redeemed_at, expires_at
+                FROM ewallet_pins 
+                WHERE pin = ? AND is_redeemed = false 
+                AND (hold_status = false OR hold_status IS NULL)
+                AND (expires_at IS NULL OR expires_at > NOW())
+                FOR UPDATE
+            ");
+            $stmt->execute([$pin]);
+            $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$pinRecord) {
+                throw new Exception("PIN not found, already redeemed, expired, or currently on hold");
+            }
+            
+            if ($amount > 0 && $pinRecord['amount'] < $amount) {
+                throw new Exception("PIN has insufficient value. Available: {$pinRecord['amount']}, Requested: $amount");
+            }
+            
+            // ============================================================
+            // UPDATE hold_status = true ON THE PIN ROW
+            // ============================================================
+            $stmt = $pdo->prepare("
+                UPDATE ewallet_pins 
+                SET hold_status = true, 
+                    hold_reference = ?, 
+                    held_at = NOW(), 
+                    held_by = ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$holdReference, $requester, $pinRecord['id']]);
+            
+            // Log the hold
+            $stmt = $pdo->prepare("
+                INSERT INTO pin_hold_logs (pin_id, hold_reference, action, amount, held_by, created_at)
+                VALUES (?, ?, 'HELD', ?, ?, NOW())
+            ");
+            $stmt->execute([$pinRecord['id'], $holdReference, $amount, $requester]);
+            
+            $message = "PIN voucher hold placed successfully";
+            $holdPlaced = true;
+            $updatedWallet = [
+                'balance' => $pinRecord['amount'],
+                'held_balance' => $amount
+            ];
+            
+            error_log("PIN HOLD PLACED: id={$pinRecord['id']}, hold_reference=$holdReference, hold_status=true");
+            
+        } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE'])) {
+            // Release hold on PIN voucher
+            $stmt = $pdo->prepare("
+                SELECT id, pin, amount, hold_status, hold_reference, held_by
+                FROM ewallet_pins 
+                WHERE hold_reference = ? AND hold_status = true
+                FOR UPDATE
+            ");
+            $stmt->execute([$holdReference]);
+            $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$pinRecord) {
+                throw new Exception("PIN hold not found for reference: $holdReference");
+            }
+            
+            // ============================================================
+            // UPDATE hold_status = false ON THE PIN ROW
+            // ============================================================
+            $stmt = $pdo->prepare("
+                UPDATE ewallet_pins 
+                SET hold_status = false, 
+                    hold_reference = NULL, 
+                    held_at = NULL, 
+                    held_by = NULL
+                WHERE id = ?
+            ");
+            $stmt->execute([$pinRecord['id']]);
+            
+            // Log the release
+            $stmt = $pdo->prepare("
+                UPDATE pin_hold_logs 
+                SET action = 'RELEASED', 
+                    released_at = NOW(), 
+                    released_by = ?
+                WHERE hold_reference = ? AND action = 'HELD'
+            ");
+            $stmt->execute([$requester, $holdReference]);
+            
+            $message = "PIN voucher hold released successfully";
+            $holdPlaced = false;
+            $updatedWallet = ['balance' => $pinRecord['amount'], 'held_balance' => 0];
+            
+            error_log("PIN HOLD RELEASED: id={$pinRecord['id']}, hold_reference=$holdReference, hold_status=false");
+            
+        } elseif (in_array($action, ['DEBIT_FUNDS', 'DEBIT', 'COMMIT'])) {
+            // Redeem the PIN (commit)
+            $stmt = $pdo->prepare("
+                SELECT id, pin, amount, hold_status, hold_reference, held_by
+                FROM ewallet_pins 
+                WHERE hold_reference = ? AND hold_status = true
+                FOR UPDATE
+            ");
+            $stmt->execute([$holdReference]);
+            $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$pinRecord) {
+                throw new Exception("PIN hold not found for reference: $holdReference");
+            }
+            
+            $debitAmount = $amount > 0 ? $amount : $pinRecord['amount'];
+            
+            // ============================================================
+            // MARK AS REDEEMED (is_redeemed = true, hold_status = false)
+            // ============================================================
+            $stmt = $pdo->prepare("
+                UPDATE ewallet_pins 
+                SET is_redeemed = true,
+                    hold_status = false,
+                    redeemed_at = NOW(),
+                    redeemed_by = ?,
+                    hold_reference = NULL,
+                    held_at = NULL,
+                    held_by = NULL
+                WHERE id = ?
+            ");
+            $stmt->execute([$requester, $pinRecord['id']]);
+            
+            // Log the debit
+            $stmt = $pdo->prepare("
+                UPDATE pin_hold_logs 
+                SET action = 'DEBITED', 
+                    amount = ?,
+                    released_at = NOW(), 
+                    released_by = ?
+                WHERE hold_reference = ? AND action = 'HELD'
+            ");
+            $stmt->execute([$debitAmount, $requester, $holdReference]);
+            
+            $message = "PIN voucher redeemed successfully (funds debited)";
+            $holdPlaced = false;
+            $updatedWallet = ['balance' => 0, 'held_balance' => 0];
+            
+            error_log("PIN REDEEMED: id={$pinRecord['id']}, amount=$debitAmount");
+        } else {
+            throw new Exception("Unsupported action for PIN: $action");
+        }
         
     } else {
         // ============================================================
-        // HANDLE WALLET/ACCOUNT ASSET TYPE (Original logic)
+        // HANDLE WALLET HOLDS (Original logic)
         // ============================================================
         
-        if (empty($phone)) {
-            throw new Exception("Phone number required for BANK-WALLET/ACCOUNT");
-        }
-
-        $targetPhone = $phone;
-        if (!str_starts_with($targetPhone, '+')) {
-            $targetPhone = '+' . $targetPhone;
-        }
-        
-        error_log("Looking for wallet with phone: " . $targetPhone);
-
-        $stmt = $pdo->prepare("
-            SELECT 
-                wallet_id,
-                phone,
-                balance,
-                status,
-                wallet_type,
-                currency,
-                is_frozen,
-                user_id,
-                created_at
-            FROM wallets 
-            WHERE phone = :phone 
-            AND status = 'active'
-            AND is_frozen = false
-            LIMIT 1
-        ");
-        $stmt->execute(['phone' => $targetPhone]);
-        $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$wallet) {
-            $phoneWithoutPlus = ltrim($targetPhone, '+');
-            $stmt = $pdo->prepare("
-                SELECT * FROM wallets 
-                WHERE phone = :phone 
-                AND status = 'active'
-                AND is_frozen = false
-                LIMIT 1
-            ");
-            $stmt->execute(['phone' => $phoneWithoutPlus]);
-            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$wallet) {
-                throw new Exception("Wallet not found for phone: $targetPhone");
+        if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
+            if (!$phone && !$accountNumber) {
+                throw new Exception("No identifier found");
+            }
+            if ($amount <= 0) {
+                throw new Exception("Valid amount required");
             }
         }
-
-        error_log("Wallet found: ID={$wallet['wallet_id']}, Balance={$wallet['balance']}");
-
-        // Check if wallet is frozen (already checked above)
-        if ($wallet['status'] !== 'active') {
-            throw new Exception("Wallet is not active: {$wallet['status']}");
-        }
-
-        if ($amount > 0 && $wallet['balance'] < $amount) {
-            throw new Exception("Insufficient funds. Available: {$wallet['balance']}, Requested: $amount");
-        }
-
-        $verified = true;
-        $assetId = $wallet['wallet_id'];
-        $availableBalance = (float)$wallet['balance'];
-        $holderName = "Saccus Salis Customer";
-        $expiryDate = null;
         
-        $metadata = [
-            "wallet_id" => $wallet['wallet_id'],
-            "wallet_type" => $wallet['wallet_type'],
-            "currency" => $wallet['currency'] ?? 'BWP',
-            "phone" => $wallet['phone'],
-            "status" => $wallet['status'],
-            "asset_type" => "WALLET"
-        ];
+        // Find wallet
+        $wallet = null;
+        if ($phone) {
+            $stmt = $pdo->prepare("SELECT wallet_id, balance, held_balance FROM wallets WHERE phone = ? AND status = 'active' AND is_frozen = false FOR UPDATE");
+            $stmt->execute([$phone]);
+            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+        } elseif ($accountNumber) {
+            $stmt = $pdo->prepare("SELECT w.wallet_id, w.balance, w.held_balance FROM wallets w JOIN accounts a ON a.user_id = w.user_id WHERE a.account_number = ? AND w.status = 'active' AND w.is_frozen = false FOR UPDATE");
+            $stmt->execute([$accountNumber]);
+            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+        }
+        
+        if (!$wallet) {
+            throw new Exception("Wallet not found");
+        }
+
+        if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
+            $availableBalance = $wallet['balance'] - ($wallet['held_balance'] ?? 0);
+            if ($availableBalance < $amount) {
+                throw new Exception("Insufficient balance");
+            }
+
+            $stmt = $pdo->prepare("UPDATE wallets SET held_balance = COALESCE(held_balance,0) + ? WHERE wallet_id = ?");
+            $stmt->execute([$amount, $wallet['wallet_id']]);
+
+            $stmt = $pdo->prepare("
+                INSERT INTO financial_holds 
+                    (wallet_id, amount, hold_reference, foreign_bank, session_id, status, 
+                     requester, signature_verified, expires_at, created_at)
+                VALUES 
+                    (?, ?, ?, ?, ?, 'HELD', ?, ?, NOW() + INTERVAL '24 hours', NOW())
+                RETURNING id
+            ");
+            $stmt->execute([
+                $wallet['wallet_id'], 
+                $amount, 
+                $holdReference, 
+                $foreignBank, 
+                $sessionId,
+                $requester,
+                $isValid ? 1 : 0
+            ]);
+            $holdId = $stmt->fetchColumn();
+            $message = "Hold placed successfully";
+            $holdPlaced = true;
+            
+        } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE'])) {
+            $stmt = $pdo->prepare("SELECT id, wallet_id, amount FROM financial_holds WHERE hold_reference = ? AND status = 'HELD' FOR UPDATE");
+            $stmt->execute([$holdReference]);
+            $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$hold) throw new Exception("Hold not found");
+
+            $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'RELEASED', released_at = NOW() WHERE id = ?");
+            $stmt->execute([$hold['id']]);
+
+            $stmt = $pdo->prepare("UPDATE wallets SET held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0) WHERE wallet_id = ?");
+            $stmt->execute([$amount, $wallet['wallet_id']]);
+
+            $message = "Hold released successfully";
+            $holdPlaced = false;
+            
+        } elseif (in_array($action, ['DEBIT_FUNDS', 'DEBIT', 'COMMIT'])) {
+            $stmt = $pdo->prepare("SELECT id, wallet_id, amount FROM financial_holds WHERE hold_reference = ? AND status = 'HELD' FOR UPDATE");
+            $stmt->execute([$holdReference]);
+            $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$hold) throw new Exception("Hold not found");
+
+            $inputAmount = $amount > 0 ? $amount : $hold['amount'];
+            $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0) WHERE wallet_id = ?");
+            $stmt->execute([$inputAmount, $inputAmount, $wallet['wallet_id']]);
+
+            $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'DEBITED', debited_at = NOW(), debited_by = ? WHERE id = ?");
+            $stmt->execute([$requester, $hold['id']]);
+
+            $message = "Funds debited successfully";
+            $holdPlaced = false;
+        }
+        
+        // Get updated wallet balance
+        $stmt = $pdo->prepare("SELECT balance, held_balance FROM wallets WHERE wallet_id = ?");
+        $stmt->execute([$wallet['wallet_id']]);
+        $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    // ============================================================
-    // BUILD RESPONSE
-    // ============================================================
+    $pdo->commit();
+
+    // Build response payload
     $responsePayload = [
-        "success" => true,
-        "verified" => $verified,
-        "asset_id" => $assetId,
-        "asset_type" => $assetType,
-        "available_balance" => $availableBalance,
-        "balance" => $availableBalance,
-        "holder_name" => $holderName,
-        "recipient_phone" => $phone ?? ($pin ? "PIN-$pin" : null),
-        "expiry_date" => $expiryDate,
-        "metadata" => $metadata
+        'status' => 'SUCCESS',
+        'hold_placed' => $holdPlaced ?? true,
+        'hold_reference' => $holdReference,
+        'session_id' => $sessionId,
+        'message' => $message,
+        'asset_type' => $assetType,
+        'new_balance' => (float)($updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0)),
+        'held_balance' => (float)($updatedWallet['held_balance'] ?? 0),
+        'available_balance' => (float)($updatedWallet['balance'] - ($updatedWallet['held_balance'] ?? 0)),
+        'requester' => $requester,
+        'signature_verified' => $isValid
     ];
     
-    if ($assetType === 'PIN' && $pin) {
+    // Include PIN in response if it was used
+    if ($pin && !empty($pin)) {
         $responsePayload['pin'] = $pin;
-        $responsePayload['is_on_hold'] = false;
-        $responsePayload['hold_status'] = 'FREE';
     }
     
-    error_log("SUCCESS RESPONSE: " . json_encode($responsePayload));
-    echo json_encode($responsePayload);
+    error_log("HOLD: Response payload: " . json_encode($responsePayload));
+    
+    send_signed_response($responsePayload);
 
 } catch (Exception $e) {
-    error_log("verify_asset error: " . $e->getMessage());
-    error_log("Trace: " . $e->getTraceAsString());
-    
-    http_response_code(200);
-    
-    $errorResponse = [
-        "success" => true,
-        "verified" => false,
-        "message" => $e->getMessage(),
-        "timestamp" => time(),
-        "debug" => [
-            "asset_type" => $assetType,
-            "phone" => $phone ?? null,
-            "pin" => isset($pin) ? substr($pin, -4) : null
-        ]
-    ];
-    
-    // Add PIN-specific error details
-    if ($assetType === 'PIN' && isset($pin)) {
-        $errorResponse['pin_hold_check'] = true;
-        $errorResponse['is_on_hold'] = true;
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
     }
     
+    error_log("Hold.php ERROR: " . $e->getMessage());
+    
+    $errorResponse = [
+        'status' => 'ERROR',
+        'hold_placed' => false,
+        'message' => 'Bank communication failed',
+        'reason' => $e->getMessage()
+    ];
+    
     echo json_encode($errorResponse);
+    http_response_code(400);
+} finally {
+    if (ob_get_length() !== false) {
+        ob_end_flush();
+    }
 }
