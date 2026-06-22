@@ -42,6 +42,14 @@ $reference = $input['reference'] ?? $input['transaction_reference'] ?? null;
 
 error_log("Normalized - Type: $assetType, Phone: $phone, PIN: " . ($pin ? substr($pin, -4) : 'null') . ", Amount: $amount");
 
+// ============================================================
+// AUTO-DETECT PIN: If pin is present, override asset_type to PIN
+// ============================================================
+if ($pin && !empty($pin)) {
+    $assetType = 'PIN';
+    error_log("verify_asset: Auto-detected PIN asset type. PIN: " . substr($pin, -4));
+}
+
 // SACCUSSALIS handles BANK-WALLET, ACCOUNT, and PIN asset types
 if ($assetType !== 'BANK-WALLET' && $assetType !== 'ACCOUNT' && $assetType !== 'PIN') {
     error_log("ERROR: Unsupported asset type: $assetType");
@@ -55,7 +63,7 @@ if ($assetType !== 'BANK-WALLET' && $assetType !== 'ACCOUNT' && $assetType !== '
 }
 
 try {
-    if (!isset($pdo)) {
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Database connection failed to initialize.");
     }
 
@@ -69,10 +77,8 @@ try {
     // ============================================================
     // HANDLE PIN ASSET TYPE (with hold checking)
     // ============================================================
-    if ($assetType === 'PIN' || ($pin && !empty($pin))) {
-        if (empty($pin)) {
-            throw new Exception("PIN number required for PIN asset type");
-        }
+    if ($assetType === 'PIN' && $pin && !empty($pin)) {
+        error_log("verify_asset: Processing PIN verification for PIN: " . substr($pin, -4));
 
         // Check PIN - MUST NOT be redeemed OR on hold
         $stmt = $pdo->prepare("
@@ -100,12 +106,15 @@ try {
         $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$pinRecord) {
+            error_log("verify_asset: PIN not found or already redeemed: $pin");
             throw new Exception("PIN not found, already redeemed, or expired");
         }
 
+        error_log("PIN found: id={$pinRecord['id']}, amount={$pinRecord['amount']}, hold_status={$pinRecord['hold_status']}");
+
         // Check if PIN is on hold
         if ($pinRecord['hold_status'] == true) {
-            error_log("PIN is on hold: {$pinRecord['hold_reference']} held by {$pinRecord['held_by']}");
+            error_log("verify_asset: PIN is on hold: {$pinRecord['hold_reference']} held by {$pinRecord['held_by']}");
             throw new Exception("PIN is currently on hold. Hold reference: {$pinRecord['hold_reference']}");
         }
 
@@ -131,12 +140,14 @@ try {
             "asset_type" => "PIN"
         ];
         
-        error_log("PIN verified successfully: ID={$pinRecord['id']}, Balance={$pinRecord['amount']}");
+        error_log("verify_asset: PIN verified successfully: ID={$pinRecord['id']}, Balance={$pinRecord['amount']}");
         
     } else {
         // ============================================================
         // HANDLE WALLET/ACCOUNT ASSET TYPE (Original logic)
         // ============================================================
+        
+        error_log("verify_asset: Processing WALLET/ACCOUNT verification for phone: $phone");
         
         if (empty($phone)) {
             throw new Exception("Phone number required for BANK-WALLET/ACCOUNT");
@@ -188,9 +199,14 @@ try {
 
         error_log("Wallet found: ID={$wallet['wallet_id']}, Balance={$wallet['balance']}");
 
-        // Check if wallet is frozen (already checked above)
+        // Check if wallet is active
         if ($wallet['status'] !== 'active') {
             throw new Exception("Wallet is not active: {$wallet['status']}");
+        }
+
+        // Check if wallet is frozen
+        if ($wallet['is_frozen'] == true) {
+            throw new Exception("Wallet is frozen");
         }
 
         if ($amount > 0 && $wallet['balance'] < $amount) {
@@ -209,6 +225,7 @@ try {
             "currency" => $wallet['currency'] ?? 'BWP',
             "phone" => $wallet['phone'],
             "status" => $wallet['status'],
+            "is_frozen" => $wallet['is_frozen'],
             "asset_type" => "WALLET"
         ];
     }
@@ -229,6 +246,7 @@ try {
         "metadata" => $metadata
     ];
     
+    // Include PIN info if PIN was verified
     if ($assetType === 'PIN' && $pin) {
         $responsePayload['pin'] = $pin;
         $responsePayload['is_on_hold'] = false;
