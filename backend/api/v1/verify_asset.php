@@ -34,8 +34,22 @@ if (!$input) {
     exit;
 }
 
-// Get request parameters
-$pin = $input['pin'] ?? $input['ewallet_pin'] ?? $input['atm_pin'] ?? null;
+// ============================================================
+// DETECT PIN FROM ALL POSSIBLE LOCATIONS
+// ============================================================
+$pin = $input['pin'] ?? 
+       $input['wallet_pin'] ?? 
+       $input['atm_pin'] ?? 
+       $input['voucher_pin'] ?? 
+       $input['card_pin'] ?? 
+       $input['asset_fields']['wallet_pin'] ?? 
+       $input['asset_fields']['pin'] ?? 
+       $input['asset_fields']['atm_pin'] ?? 
+       $input['asset_fields']['voucher_pin'] ?? 
+       $input['source']['wallet_pin'] ?? 
+       $input['source']['pin'] ?? 
+       null;
+
 $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
 $amount = floatval($input['amount'] ?? $input['value'] ?? 0);
 $assetType = strtoupper($input['asset_type'] ?? 'WALLET');
@@ -43,7 +57,7 @@ $assetType = strtoupper($input['asset_type'] ?? 'WALLET');
 error_log("verify_asset: PIN=" . ($pin ? substr($pin, -4) : 'null') . ", phone=$phone, amount=$amount, assetType=$assetType");
 
 if (!$pin) {
-    error_log("verify_asset: No PIN provided");
+    error_log("verify_asset: No PIN found in request");
     echo json_encode([
         "success" => false,
         "verified" => false,
@@ -111,6 +125,18 @@ try {
         exit;
     }
 
+    // Check if PIN has enough value
+    if ($amount > 0 && $pinRecord['pin_amount'] < $amount) {
+        error_log("verify_asset: PIN has insufficient value. PIN Amount: {$pinRecord['pin_amount']}, Requested: $amount");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "PIN has insufficient value. Available: {$pinRecord['pin_amount']}, Requested: $amount",
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
     // ============================================================
     // STEP 2: CHECK WALLET TABLE FOR BALANCE AND STATUS
     // ============================================================
@@ -131,7 +157,6 @@ try {
     
     error_log("Looking for wallet with phone: " . $targetPhone);
 
-    // Check wallet
     $stmt = $pdo->prepare("
         SELECT 
             wallet_id,
@@ -153,7 +178,6 @@ try {
     $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$wallet) {
-        // Try without +
         $phoneWithoutPlus = ltrim($targetPhone, '+');
         $stmt = $pdo->prepare("
             SELECT * FROM wallets 
@@ -179,7 +203,6 @@ try {
 
     error_log("Wallet found: ID={$wallet['wallet_id']}, Balance={$wallet['balance']}, Status={$wallet['status']}");
 
-    // Check if wallet is active
     if ($wallet['status'] !== 'active') {
         error_log("verify_asset: Wallet is not active: {$wallet['status']}");
         echo json_encode([
@@ -191,7 +214,6 @@ try {
         exit;
     }
 
-    // Check if wallet is frozen
     if ($wallet['is_frozen'] == true) {
         error_log("verify_asset: Wallet is frozen");
         echo json_encode([
@@ -203,7 +225,6 @@ try {
         exit;
     }
 
-    // Check if wallet has sufficient balance
     if ($amount > 0 && $wallet['balance'] < $amount) {
         error_log("verify_asset: Insufficient funds. Balance: {$wallet['balance']}, Requested: $amount");
         echo json_encode([
@@ -211,18 +232,6 @@ try {
             "verified" => false,
             "message" => "Insufficient funds. Available: {$wallet['balance']}, Requested: $amount",
             "balance" => (float)$wallet['balance'],
-            "pin" => $pin
-        ]);
-        exit;
-    }
-
-    // Also check if PIN amount matches (PIN should have at least the requested amount)
-    if ($pinRecord['pin_amount'] < $amount) {
-        error_log("verify_asset: PIN has insufficient value. PIN Amount: {$pinRecord['pin_amount']}, Requested: $amount");
-        echo json_encode([
-            "success" => true,
-            "verified" => false,
-            "message" => "PIN has insufficient value. Available: {$pinRecord['pin_amount']}, Requested: $amount",
             "pin" => $pin
         ]);
         exit;
