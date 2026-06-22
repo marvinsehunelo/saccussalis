@@ -1,7 +1,7 @@
 <?php
 /**
- * verify_asset.php - SACCUSSALIS VERSION with PIN HOLD checking
- * Asset verification that checks both wallet balances and PIN status
+ * verify_asset.php - SACCUSSALIS VERSION
+ * Checks BOTH wallet balance AND ewallet_pin validity
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -34,30 +34,20 @@ if (!$input) {
     exit;
 }
 
-$assetType = strtoupper($input['asset_type'] ?? $input['type'] ?? $input['source']['asset_type'] ?? '');
-$phone = $input['wallet_phone'] ?? $input['ewallet_phone'] ?? $input['phone'] ?? $input['source']['ewallet']['ewallet_phone'] ?? $input['source']['phone'] ?? null;
-$pin = $input['pin'] ?? $input['atm_pin'] ?? $input['atm_code'] ?? $input['cashout_pin'] ?? null;
+// Get request parameters
+$pin = $input['pin'] ?? $input['ewallet_pin'] ?? $input['atm_pin'] ?? null;
+$phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
 $amount = floatval($input['amount'] ?? $input['value'] ?? 0);
-$reference = $input['reference'] ?? $input['transaction_reference'] ?? null;
+$assetType = strtoupper($input['asset_type'] ?? 'WALLET');
 
-error_log("Normalized - Type: $assetType, Phone: $phone, PIN: " . ($pin ? substr($pin, -4) : 'null') . ", Amount: $amount");
+error_log("verify_asset: PIN=" . ($pin ? substr($pin, -4) : 'null') . ", phone=$phone, amount=$amount, assetType=$assetType");
 
-// ============================================================
-// AUTO-DETECT PIN: If pin is present, override asset_type to PIN
-// ============================================================
-if ($pin && !empty($pin)) {
-    $assetType = 'PIN';
-    error_log("verify_asset: Auto-detected PIN asset type. PIN: " . substr($pin, -4));
-}
-
-// SACCUSSALIS handles BANK-WALLET, ACCOUNT, and PIN asset types
-if ($assetType !== 'BANK-WALLET' && $assetType !== 'ACCOUNT' && $assetType !== 'PIN') {
-    error_log("ERROR: Unsupported asset type: $assetType");
+if (!$pin) {
+    error_log("verify_asset: No PIN provided");
     echo json_encode([
-        "success" => true,
+        "success" => false,
         "verified" => false,
-        "message" => "Unsupported asset type. Supported: BANK-WALLET, ACCOUNT, PIN",
-        "debug" => ["received_type" => $assetType]
+        "message" => "PIN number required"
     ]);
     exit;
 }
@@ -67,218 +57,221 @@ try {
         throw new Exception("Database connection failed to initialize.");
     }
 
-    $verified = false;
-    $assetId = null;
-    $availableBalance = 0;
-    $holderName = null;
-    $expiryDate = null;
-    $metadata = [];
+    // ============================================================
+    // STEP 1: CHECK ewallet_pins TABLE FOR THE PIN
+    // ============================================================
+    $stmt = $pdo->prepare("
+        SELECT 
+            id,
+            pin,
+            amount as pin_amount,
+            sat_purchased,
+            is_redeemed,
+            hold_status,
+            hold_reference,
+            held_at,
+            held_by,
+            expires_at,
+            created_at,
+            sender_phone,
+            recipient_phone
+        FROM ewallet_pins 
+        WHERE pin = :pin 
+        AND is_redeemed = false
+        AND (expires_at IS NULL OR expires_at > NOW())
+        LIMIT 1
+    ");
+    $stmt->execute(['pin' => $pin]);
+    $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$pinRecord) {
+        error_log("verify_asset: PIN not found or already redeemed/expired: $pin");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "PIN not found, already redeemed, or expired",
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
+    error_log("PIN found: id={$pinRecord['id']}, pin_amount={$pinRecord['pin_amount']}, hold_status={$pinRecord['hold_status']}");
+
+    // Check if PIN is on hold
+    if ($pinRecord['hold_status'] == true) {
+        error_log("verify_asset: PIN is on hold: {$pinRecord['hold_reference']} held by {$pinRecord['held_by']}");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "PIN is currently on hold. Hold reference: {$pinRecord['hold_reference']}",
+            "is_on_hold" => true,
+            "hold_reference" => $pinRecord['hold_reference'],
+            "pin" => $pin
+        ]);
+        exit;
+    }
 
     // ============================================================
-    // HANDLE PIN ASSET TYPE (with hold checking)
+    // STEP 2: CHECK WALLET TABLE FOR BALANCE AND STATUS
     // ============================================================
-    if ($assetType === 'PIN' && $pin && !empty($pin)) {
-        error_log("verify_asset: Processing PIN verification for PIN: " . substr($pin, -4));
+    if (empty($phone)) {
+        error_log("verify_asset: No phone provided for wallet check");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "Phone number required for wallet verification"
+        ]);
+        exit;
+    }
 
-        // Check PIN - MUST NOT be redeemed OR on hold
+    $targetPhone = $phone;
+    if (!str_starts_with($targetPhone, '+')) {
+        $targetPhone = '+' . $targetPhone;
+    }
+    
+    error_log("Looking for wallet with phone: " . $targetPhone);
+
+    // Check wallet
+    $stmt = $pdo->prepare("
+        SELECT 
+            wallet_id,
+            phone,
+            balance,
+            status,
+            wallet_type,
+            currency,
+            is_frozen,
+            user_id,
+            created_at
+        FROM wallets 
+        WHERE phone = :phone 
+        AND status = 'active'
+        AND is_frozen = false
+        LIMIT 1
+    ");
+    $stmt->execute(['phone' => $targetPhone]);
+    $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$wallet) {
+        // Try without +
+        $phoneWithoutPlus = ltrim($targetPhone, '+');
         $stmt = $pdo->prepare("
-            SELECT 
-                id,
-                pin,
-                amount,
-                sat_purchased,
-                is_redeemed,
-                hold_status,
-                hold_reference,
-                held_at,
-                held_by,
-                expires_at,
-                created_at,
-                sender_phone,
-                recipient_phone
-            FROM ewallet_pins 
-            WHERE pin = :pin 
-            AND is_redeemed = false
-            AND (expires_at IS NULL OR expires_at > NOW())
-            LIMIT 1
-        ");
-        $stmt->execute(['pin' => $pin]);
-        $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$pinRecord) {
-            error_log("verify_asset: PIN not found or already redeemed: $pin");
-            throw new Exception("PIN not found, already redeemed, or expired");
-        }
-
-        error_log("PIN found: id={$pinRecord['id']}, amount={$pinRecord['amount']}, hold_status={$pinRecord['hold_status']}");
-
-        // Check if PIN is on hold
-        if ($pinRecord['hold_status'] == true) {
-            error_log("verify_asset: PIN is on hold: {$pinRecord['hold_reference']} held by {$pinRecord['held_by']}");
-            throw new Exception("PIN is currently on hold. Hold reference: {$pinRecord['hold_reference']}");
-        }
-
-        // Check if amount requested is available
-        if ($amount > 0 && $pinRecord['amount'] < $amount) {
-            throw new Exception("PIN has insufficient value. Available: {$pinRecord['amount']}, Requested: $amount");
-        }
-
-        $verified = true;
-        $assetId = $pinRecord['id'];
-        $availableBalance = (float)$pinRecord['amount'];
-        $holderName = "PIN Holder - " . ($pinRecord['recipient_phone'] ?? $pinRecord['sender_phone'] ?? 'Unknown');
-        $expiryDate = $pinRecord['expires_at'];
-        
-        $metadata = [
-            "pin_id" => $pinRecord['id'],
-            "pin" => $pinRecord['pin'],
-            "sat_purchased" => $pinRecord['sat_purchased'],
-            "created_at" => $pinRecord['created_at'],
-            "sender_phone" => $pinRecord['sender_phone'],
-            "recipient_phone" => $pinRecord['recipient_phone'],
-            "hold_status" => $pinRecord['hold_status'],
-            "asset_type" => "PIN"
-        ];
-        
-        error_log("verify_asset: PIN verified successfully: ID={$pinRecord['id']}, Balance={$pinRecord['amount']}");
-        
-    } else {
-        // ============================================================
-        // HANDLE WALLET/ACCOUNT ASSET TYPE (Original logic)
-        // ============================================================
-        
-        error_log("verify_asset: Processing WALLET/ACCOUNT verification for phone: $phone");
-        
-        if (empty($phone)) {
-            throw new Exception("Phone number required for BANK-WALLET/ACCOUNT");
-        }
-
-        $targetPhone = $phone;
-        if (!str_starts_with($targetPhone, '+')) {
-            $targetPhone = '+' . $targetPhone;
-        }
-        
-        error_log("Looking for wallet with phone: " . $targetPhone);
-
-        $stmt = $pdo->prepare("
-            SELECT 
-                wallet_id,
-                phone,
-                balance,
-                status,
-                wallet_type,
-                currency,
-                is_frozen,
-                user_id,
-                created_at
-            FROM wallets 
+            SELECT * FROM wallets 
             WHERE phone = :phone 
             AND status = 'active'
             AND is_frozen = false
             LIMIT 1
         ");
-        $stmt->execute(['phone' => $targetPhone]);
+        $stmt->execute(['phone' => $phoneWithoutPlus]);
         $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$wallet) {
-            $phoneWithoutPlus = ltrim($targetPhone, '+');
-            $stmt = $pdo->prepare("
-                SELECT * FROM wallets 
-                WHERE phone = :phone 
-                AND status = 'active'
-                AND is_frozen = false
-                LIMIT 1
-            ");
-            $stmt->execute(['phone' => $phoneWithoutPlus]);
-            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$wallet) {
-                throw new Exception("Wallet not found for phone: $targetPhone");
-            }
-        }
-
-        error_log("Wallet found: ID={$wallet['wallet_id']}, Balance={$wallet['balance']}");
-
-        // Check if wallet is active
-        if ($wallet['status'] !== 'active') {
-            throw new Exception("Wallet is not active: {$wallet['status']}");
-        }
-
-        // Check if wallet is frozen
-        if ($wallet['is_frozen'] == true) {
-            throw new Exception("Wallet is frozen");
-        }
-
-        if ($amount > 0 && $wallet['balance'] < $amount) {
-            throw new Exception("Insufficient funds. Available: {$wallet['balance']}, Requested: $amount");
-        }
-
-        $verified = true;
-        $assetId = $wallet['wallet_id'];
-        $availableBalance = (float)$wallet['balance'];
-        $holderName = "Saccus Salis Customer";
-        $expiryDate = null;
         
-        $metadata = [
+        if (!$wallet) {
+            error_log("verify_asset: Wallet not found for phone: $targetPhone");
+            echo json_encode([
+                "success" => true,
+                "verified" => false,
+                "message" => "Wallet not found for phone: $targetPhone",
+                "pin" => $pin
+            ]);
+            exit;
+        }
+    }
+
+    error_log("Wallet found: ID={$wallet['wallet_id']}, Balance={$wallet['balance']}, Status={$wallet['status']}");
+
+    // Check if wallet is active
+    if ($wallet['status'] !== 'active') {
+        error_log("verify_asset: Wallet is not active: {$wallet['status']}");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "Wallet is not active: {$wallet['status']}",
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
+    // Check if wallet is frozen
+    if ($wallet['is_frozen'] == true) {
+        error_log("verify_asset: Wallet is frozen");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "Wallet is frozen",
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
+    // Check if wallet has sufficient balance
+    if ($amount > 0 && $wallet['balance'] < $amount) {
+        error_log("verify_asset: Insufficient funds. Balance: {$wallet['balance']}, Requested: $amount");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "Insufficient funds. Available: {$wallet['balance']}, Requested: $amount",
+            "balance" => (float)$wallet['balance'],
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
+    // Also check if PIN amount matches (PIN should have at least the requested amount)
+    if ($pinRecord['pin_amount'] < $amount) {
+        error_log("verify_asset: PIN has insufficient value. PIN Amount: {$pinRecord['pin_amount']}, Requested: $amount");
+        echo json_encode([
+            "success" => true,
+            "verified" => false,
+            "message" => "PIN has insufficient value. Available: {$pinRecord['pin_amount']}, Requested: $amount",
+            "pin" => $pin
+        ]);
+        exit;
+    }
+
+    // ============================================================
+    // BOTH WALLET AND PIN ARE VALID - Return success
+    // ============================================================
+    $responsePayload = [
+        "success" => true,
+        "verified" => true,
+        "asset_id" => $wallet['wallet_id'],
+        "asset_type" => "BANK-WALLET",
+        "available_balance" => (float)$wallet['balance'],
+        "balance" => (float)$wallet['balance'],
+        "holder_name" => "Saccus Salis Customer",
+        "recipient_phone" => $wallet['phone'],
+        "expiry_date" => null,
+        "pin" => $pin,
+        "pin_id" => $pinRecord['id'],
+        "pin_amount" => (float)$pinRecord['pin_amount'],
+        "is_on_hold" => false,
+        "hold_status" => "FREE",
+        "metadata" => [
             "wallet_id" => $wallet['wallet_id'],
             "wallet_type" => $wallet['wallet_type'],
             "currency" => $wallet['currency'] ?? 'BWP',
             "phone" => $wallet['phone'],
             "status" => $wallet['status'],
             "is_frozen" => $wallet['is_frozen'],
-            "asset_type" => "WALLET"
-        ];
-    }
-
-    // ============================================================
-    // BUILD RESPONSE
-    // ============================================================
-    $responsePayload = [
-        "success" => true,
-        "verified" => $verified,
-        "asset_id" => $assetId,
-        "asset_type" => $assetType,
-        "available_balance" => $availableBalance,
-        "balance" => $availableBalance,
-        "holder_name" => $holderName,
-        "recipient_phone" => $phone ?? ($pin ? "PIN-$pin" : null),
-        "expiry_date" => $expiryDate,
-        "metadata" => $metadata
+            "pin_id" => $pinRecord['id'],
+            "pin" => $pinRecord['pin'],
+            "pin_created_at" => $pinRecord['created_at'],
+            "pin_sender_phone" => $pinRecord['sender_phone'],
+            "pin_recipient_phone" => $pinRecord['recipient_phone'],
+            "pin_hold_status" => $pinRecord['hold_status']
+        ]
     ];
     
-    // Include PIN info if PIN was verified
-    if ($assetType === 'PIN' && $pin) {
-        $responsePayload['pin'] = $pin;
-        $responsePayload['is_on_hold'] = false;
-        $responsePayload['hold_status'] = 'FREE';
-    }
-    
-    error_log("SUCCESS RESPONSE: " . json_encode($responsePayload));
+    error_log("verify_asset: BOTH wallet and PIN verified successfully. Wallet ID={$wallet['wallet_id']}, PIN ID={$pinRecord['id']}");
     echo json_encode($responsePayload);
 
 } catch (Exception $e) {
     error_log("verify_asset error: " . $e->getMessage());
     error_log("Trace: " . $e->getTraceAsString());
     
-    http_response_code(200);
-    
-    $errorResponse = [
-        "success" => true,
+    echo json_encode([
+        "success" => false,
         "verified" => false,
-        "message" => $e->getMessage(),
-        "timestamp" => time(),
-        "debug" => [
-            "asset_type" => $assetType,
-            "phone" => $phone ?? null,
-            "pin" => isset($pin) ? substr($pin, -4) : null
-        ]
-    ];
-    
-    // Add PIN-specific error details
-    if ($assetType === 'PIN' && isset($pin)) {
-        $errorResponse['pin_hold_check'] = true;
-        $errorResponse['is_on_hold'] = true;
-    }
-    
-    echo json_encode($errorResponse);
+        "message" => $e->getMessage()
+    ]);
 }
