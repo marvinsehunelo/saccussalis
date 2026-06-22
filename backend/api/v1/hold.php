@@ -56,7 +56,7 @@ try {
     error_log("HOLD: Verified from {$requester}");
 
     // ============================================================
-    // PROCESS HOLD (Supports both WALLET and PIN)
+    // PROCESS HOLD (Supports both WALLET and PIN VOUCHER)
     // ============================================================
 
     $action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
@@ -65,42 +65,54 @@ try {
     $foreignBank = $input['foreign_bank'] ?? $input['destination_institution'] ?? 'UNKNOWN';
     $sessionId = trim($input['session_id'] ?? $input['reference'] ?? uniqid('SESSION-'));
     
-    // PIN-specific fields
-    $pin = $input['pin'] ?? null;
+    // ============================================================
+    // CHECK FOR PIN - This is a column in ewallet_pins table
+    // ============================================================
+    $pin = $input['pin'] ?? $input['atm_pin'] ?? $input['atm_code'] ?? $input['cashout_pin'] ?? null;
+    
+    // Asset type determines which table to use
     $assetType = strtoupper($input['asset_type'] ?? 'WALLET');
     
     $phone = $input['phone'] ?? $input['wallet_phone'] ?? null;
     $accountNumber = $input['account_number'] ?? null;
     
+    error_log("HOLD: asset_type=$assetType, pin=" . ($pin ? substr($pin, -4) : 'null'));
+    
     $pdo->beginTransaction();
 
-    if ($assetType === 'PIN' && $pin) {
+    // ============================================================
+    // DETECT: If PIN is provided, handle as PIN VOUCHER hold
+    // ============================================================
+    if ($pin && !empty($pin)) {
         // ============================================================
-        // HANDLE PIN HOLDS
+        // HANDLE PIN VOUCHER HOLDS (ewallet_pins table)
         // ============================================================
         
         if (in_array($action, ['PLACE_HOLD', 'PLACE', 'HOLD', 'AUTHORIZE'])) {
-            // Place hold on PIN
+            // Place hold on PIN voucher
             $stmt = $pdo->prepare("
                 SELECT id, pin, amount, sat_purchased, is_redeemed, hold_status, 
-                       held_by, hold_reference, redeemed_at
+                       held_by, hold_reference, redeemed_at, expires_at
                 FROM ewallet_pins 
                 WHERE pin = ? AND is_redeemed = false 
                 AND (hold_status = false OR hold_status IS NULL)
+                AND (expires_at IS NULL OR expires_at > NOW())
                 FOR UPDATE
             ");
             $stmt->execute([$pin]);
             $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$pinRecord) {
-                throw new Exception("PIN not found, already redeemed, or currently on hold");
+                throw new Exception("PIN not found, already redeemed, expired, or currently on hold");
             }
             
             if ($amount > 0 && $pinRecord['amount'] < $amount) {
                 throw new Exception("PIN has insufficient value. Available: {$pinRecord['amount']}, Requested: $amount");
             }
             
-            // Update hold status
+            // ============================================================
+            // UPDATE hold_status = true ON THE PIN ROW
+            // ============================================================
             $stmt = $pdo->prepare("
                 UPDATE ewallet_pins 
                 SET hold_status = true, 
@@ -118,15 +130,17 @@ try {
             ");
             $stmt->execute([$pinRecord['id'], $holdReference, $amount, $requester]);
             
-            $message = "PIN hold placed successfully";
+            $message = "PIN voucher hold placed successfully";
             $holdPlaced = true;
             $updatedWallet = [
                 'balance' => $pinRecord['amount'],
                 'held_balance' => $amount
             ];
             
+            error_log("PIN HOLD PLACED: id={$pinRecord['id']}, hold_reference=$holdReference, hold_status=true");
+            
         } elseif (in_array($action, ['RELEASE_HOLD', 'RELEASE'])) {
-            // Release hold on PIN
+            // Release hold on PIN voucher
             $stmt = $pdo->prepare("
                 SELECT id, pin, amount, hold_status, hold_reference, held_by
                 FROM ewallet_pins 
@@ -140,7 +154,9 @@ try {
                 throw new Exception("PIN hold not found for reference: $holdReference");
             }
             
-            // Update hold status
+            // ============================================================
+            // UPDATE hold_status = false ON THE PIN ROW
+            // ============================================================
             $stmt = $pdo->prepare("
                 UPDATE ewallet_pins 
                 SET hold_status = false, 
@@ -161,12 +177,14 @@ try {
             ");
             $stmt->execute([$requester, $holdReference]);
             
-            $message = "PIN hold released successfully";
+            $message = "PIN voucher hold released successfully";
             $holdPlaced = false;
             $updatedWallet = ['balance' => $pinRecord['amount'], 'held_balance' => 0];
             
+            error_log("PIN HOLD RELEASED: id={$pinRecord['id']}, hold_reference=$holdReference, hold_status=false");
+            
         } elseif (in_array($action, ['DEBIT_FUNDS', 'DEBIT', 'COMMIT'])) {
-            // Debit/commit the PIN (redeem it)
+            // Redeem the PIN (commit)
             $stmt = $pdo->prepare("
                 SELECT id, pin, amount, hold_status, hold_reference, held_by
                 FROM ewallet_pins 
@@ -182,7 +200,9 @@ try {
             
             $debitAmount = $amount > 0 ? $amount : $pinRecord['amount'];
             
-            // Mark as redeemed
+            // ============================================================
+            // MARK AS REDEEMED (is_redeemed = true, hold_status = false)
+            // ============================================================
             $stmt = $pdo->prepare("
                 UPDATE ewallet_pins 
                 SET is_redeemed = true,
@@ -207,9 +227,11 @@ try {
             ");
             $stmt->execute([$debitAmount, $requester, $holdReference]);
             
-            $message = "PIN redeemed successfully (funds debited)";
+            $message = "PIN voucher redeemed successfully (funds debited)";
             $holdPlaced = false;
             $updatedWallet = ['balance' => 0, 'held_balance' => 0];
+            
+            error_log("PIN REDEEMED: id={$pinRecord['id']}, amount=$debitAmount");
         } else {
             throw new Exception("Unsupported action for PIN: $action");
         }
@@ -329,7 +351,8 @@ try {
         'signature_verified' => $isValid
     ];
     
-    if ($assetType === 'PIN' && $pin) {
+    // Include PIN in response if it was used
+    if ($pin && !empty($pin)) {
         $responsePayload['pin'] = $pin;
     }
     
