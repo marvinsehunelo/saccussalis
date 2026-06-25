@@ -1,13 +1,14 @@
 <?php
 // /opt/lampp/htdocs/SaccusSalisbank/backend/api/v1/balance.php
-// SIMPLE BALANCE CHECK - NO SECURITY CHECKS
+// SIMPLE BALANCE CHECK - Accept both GET and POST
 
 header('Content-Type: application/json');
 require_once __DIR__ . '/../../db.php';
 
-// Get parameters from GET request or POST
-$type = $_GET['type'] ?? $_POST['type'] ?? 'wallet'; // 'wallet' or 'account'
-$identifier = $_GET['identifier'] ?? $_POST['identifier'] ?? null; // phone number or account number
+// Get parameters from GET request OR POST JSON
+$input = json_decode(file_get_contents('php://input'), true);
+$type = $_GET['type'] ?? $_POST['type'] ?? $input['type'] ?? $input['asset_type'] ?? 'wallet';
+$identifier = $_GET['identifier'] ?? $_POST['identifier'] ?? $input['source_identifier'] ?? $input['identifier'] ?? null;
 
 if (!$identifier) {
     http_response_code(400);
@@ -21,7 +22,7 @@ if (!$identifier) {
 try {
     $responseData = null;
 
-    if (strtolower($type) === 'wallet') {
+    if (strtolower($type) === 'wallet' || strtolower($type) === 'bank-wallet') {
         // Normalize phone number (remove + if present)
         $normalizedPhone = ltrim($identifier, '+');
         
@@ -64,16 +65,19 @@ try {
         
         $responseData = [
             'status' => 'success',
-            'type' => 'wallet',
-            'wallet_id' => $wallet['wallet_id'],
-            'holder_name' => $wallet['full_name'] ?? 'Wallet Holder',
-            'phone' => $wallet['phone'],
-            'balance' => (float)$wallet['balance'],
-            'held_balance' => (float)($wallet['held_balance'] ?? 0),
-            'available_balance' => (float)$availableBalance,
-            'currency' => $wallet['currency'] ?? 'BWP',
-            'wallet_type' => $wallet['wallet_type'] ?? 'EWALLET',
-            'timestamp' => time()
+            'verified' => true,
+            'data' => [
+                'wallet_id' => $wallet['wallet_id'],
+                'phone' => $wallet['phone'],
+                'balance' => (float)$wallet['balance'],
+                'held_balance' => (float)($wallet['held_balance'] ?? 0),
+                'available_balance' => (float)$availableBalance,
+                'currency' => $wallet['currency'] ?? 'BWP',
+                'wallet_type' => $wallet['wallet_type'] ?? 'EWALLET',
+                'holder_name' => $wallet['full_name'] ?? 'Wallet Holder',
+                'status' => $wallet['status'],
+                'timestamp' => time()
+            ]
         ];
 
     } elseif (strtolower($type) === 'account') {
@@ -111,15 +115,19 @@ try {
 
         $responseData = [
             'status' => 'success',
-            'type' => 'account',
-            'account_id' => $account['account_id'],
-            'account_number' => $account['account_number'],
-            'account_name' => $account['account_name'],
-            'holder_name' => $account['full_name'] ?? 'Account Holder',
-            'balance' => (float)$account['balance'],
-            'currency' => $account['currency'] ?? 'BWP',
-            'account_type' => $account['account_type'] ?? 'SAVINGS',
-            'timestamp' => time()
+            'verified' => true,
+            'data' => [
+                'account_id' => $account['account_id'],
+                'account_number' => $account['account_number'],
+                'account_name' => $account['account_name'],
+                'balance' => (float)$account['balance'],
+                'available_balance' => (float)$account['balance'],
+                'currency' => $account['currency'] ?? 'BWP',
+                'account_type' => $account['account_type'] ?? 'SAVINGS',
+                'holder_name' => $account['full_name'] ?? 'Account Holder',
+                'status' => $account['status'],
+                'timestamp' => time()
+            ]
         ];
 
     } else {
