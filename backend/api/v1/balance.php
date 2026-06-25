@@ -1,18 +1,13 @@
 <?php
 // /opt/lampp/htdocs/SaccusSalisbank/backend/api/v1/balance.php
-// Get wallet or account balance
+// SIMPLE BALANCE CHECK - NO SECURITY CHECKS
 
 header('Content-Type: application/json');
 require_once __DIR__ . '/../../db.php';
-require_once __DIR__ . '/../../helpers/crypto.php';
-require_once __DIR__ . '/../../helpers/CertificateManager.php';
 
 // Get parameters from GET request or POST
 $type = $_GET['type'] ?? $_POST['type'] ?? 'wallet'; // 'wallet' or 'account'
 $identifier = $_GET['identifier'] ?? $_POST['identifier'] ?? null; // phone number or account number
-$signature = $_GET['signature'] ?? $_SERVER['HTTP_X_SIGNATURE'] ?? null;
-$timestamp = $_GET['timestamp'] ?? $_SERVER['HTTP_X_TIMESTAMP'] ?? null;
-$requester = $_GET['requester'] ?? $_SERVER['HTTP_X_REQUESTER'] ?? 'UNKNOWN';
 
 if (!$identifier) {
     http_response_code(400);
@@ -21,61 +16,6 @@ if (!$identifier) {
         'message' => 'Identifier (phone or account number) required'
     ]);
     exit;
-}
-
-// ============================================================
-// VERIFY WITH CERTIFICATE OR SIGNATURE
-// ============================================================
-$signatureVerified = false;
-$verificationMethod = 'none';
-
-// Try to get certificate from request body (for POST with JSON)
-$input = json_decode(file_get_contents('php://input'), true);
-$certificate = $input['certificate'] ?? null;
-
-// Method 1: Certificate-based verification (preferred)
-if ($certificate) {
-    $certManager = new CertificateManager('SACCUSSALIS');
-    
-    // Create a verification payload
-    $verifyRequest = [
-        'certificate' => $certificate,
-        'signature' => $signature,
-        'requester' => $requester,
-        'timestamp' => $timestamp,
-        'type' => $type,
-        'identifier' => $identifier
-    ];
-    
-    $verification = $certManager->verifySignedRequest($verifyRequest);
-    $signatureVerified = $verification['verified'];
-    $requester = $verification['requester'] ?? $requester;
-    $verificationMethod = 'certificate';
-    
-    if ($signatureVerified) {
-        error_log("SACCUSSALIS BALANCE: Certificate verified from {$requester}");
-    } else {
-        error_log("SACCUSSALIS BALANCE: Certificate verification failed from {$requester}: " . ($verification['message'] ?? 'Unknown'));
-    }
-}
-// Method 2: Legacy signature verification (backward compatible)
-else if ($signature) {
-    $payloadToVerify = [
-        'type' => $type,
-        'identifier' => $identifier
-    ];
-    $publicKey = get_requester_public_key($requester, $pdo);
-    if ($publicKey) {
-        $signatureVerified = verify_signature($payloadToVerify, $signature, $publicKey, $timestamp);
-        $verificationMethod = 'legacy_signature';
-        if ($signatureVerified) {
-            error_log("SACCUSSALIS BALANCE: Legacy signature verified from {$requester}");
-        } else {
-            error_log("SACCUSSALIS BALANCE: Invalid legacy signature from {$requester}");
-        }
-    }
-} else {
-    error_log("SACCUSSALIS BALANCE: No verification provided from {$requester}");
 }
 
 try {
@@ -92,7 +32,6 @@ try {
             FROM wallets w
             LEFT JOIN users u ON w.user_id = u.user_id
             WHERE w.phone = :phone OR w.phone = :phone_with_plus
-            AND w.status = 'active'
             LIMIT 1
         ");
         $stmt->execute([
@@ -193,24 +132,10 @@ try {
         exit;
     }
 
-    // Add verification info
-    $responseData['requester'] = $requester;
-    $responseData['signature_verified'] = $signatureVerified;
-    $responseData['verification_method'] = $verificationMethod;
-
-    // ============================================================
-    // SEND SIGNED RESPONSE (if verification was provided)
-    // ============================================================
-    if ($signatureVerified || $verificationMethod === 'certificate') {
-        send_signed_response($responseData);
-    } else {
-        // If no verification provided or verification failed, still return data but without signature
-        echo json_encode($responseData);
-    }
+    echo json_encode($responseData);
 
 } catch (Exception $e) {
     error_log("SACCUSSALIS BALANCE error: " . $e->getMessage());
-    error_log("Trace: " . $e->getTraceAsString());
     http_response_code(500);
     echo json_encode([
         'status' => 'error',
