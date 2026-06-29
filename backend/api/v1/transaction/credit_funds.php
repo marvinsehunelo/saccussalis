@@ -2,8 +2,8 @@
 // /opt/lampp/htdocs/SaccusSalisbank/backend/api/v1/transactions/credit_funds.php
 header('Content-Type: application/json');
 require_once '../../../db.php';
-require_once __DIR__ . '/../../helpers/crypto.php';
-require_once __DIR__ . '/../../helpers/CertificateManager.php';
+require_once __DIR__ . '/../../../helpers/crypto.php';
+require_once __DIR__ . '/../../../helpers/CertificateManager.php';
 
 $input = json_decode(file_get_contents("php://input"), true);
 
