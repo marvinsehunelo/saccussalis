@@ -107,7 +107,6 @@ try {
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing ACCOUNT deposit for: {$accountNumber}");
         
-        // ✅ accounts table uses is_frozen, not status
         $stmt = $pdo->prepare("
             SELECT account_id, balance, user_id 
             FROM accounts 
@@ -148,7 +147,6 @@ try {
             error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to account {$recipientId}, new balance: {$updatedBalance}");
             
         } else {
-            // Create new user and account
             error_log("SACCUSSALIS CREDIT_FUNDS: Creating new user and account for: {$accountNumber}");
             
             $randomPassword = bin2hex(random_bytes(16));
@@ -194,7 +192,6 @@ try {
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing WALLET deposit for phone: {$phone}");
         
-        // ✅ wallets table uses status, not is_frozen
         $stmt = $pdo->prepare("
             SELECT wallet_id, balance, user_id 
             FROM wallets 
@@ -289,7 +286,7 @@ try {
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
-        // ✅ Create transaction FIRST
+        // Create transaction FIRST
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -332,7 +329,7 @@ try {
         
         error_log("SACCUSSALIS CREDIT_FUNDS: Created transaction {$transactionId} for wallet deposit");
         
-        // ✅ Insert eWallet PIN
+        // Insert eWallet PIN
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -395,39 +392,14 @@ try {
 
     error_log("SACCUSSALIS CREDIT_FUNDS: Settlement account new balance: {$settlement['balance']}");
 
-    // Create settlement record
-    $settlementRef = $input['reference'] ?? $input['settlement_ref'] ?? ('SET' . round(microtime(true) * 1000));
-
-    $stmt = $pdo->prepare("
-        INSERT INTO settlements 
-            (settlement_ref, type, issuer_bank, recipient_type, recipient_id, amount, status, 
-             requester, signature_verified, destination_asset_type, ewallet_pin_id, transaction_id, created_at, updated_at) 
-        VALUES 
-            (?, 'SWAP_CREDIT', ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, NOW(), NOW())
-    ");
-    $stmt->execute([
-        $settlementRef,
-        $fromBank,
-        $recipientType,
-        $recipientId,
-        $amount,
-        $requester,
-        $isValid ? 1 : 0,
-        $destinationAssetType,
-        $ewalletPinId,
-        $transactionId
-    ]);
-
     $pdo->commit();
 
-    error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed - Ref: {$settlementRef}");
+    error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully");
 
     // Response
     $responsePayload = [
         'status' => 'success',
         'processed' => true,
-        'transaction_reference' => $settlementRef,
-        'settlement_ref' => $settlementRef,
         'from_bank' => $fromBank,
         'recipient_type' => $recipientType,
         'recipient_id' => $recipientId,
