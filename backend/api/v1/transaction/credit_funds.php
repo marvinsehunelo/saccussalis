@@ -125,7 +125,9 @@ try {
     // --- 1. Find or create recipient based on asset type ---
     
     if ($destinationAssetType === 'ACCOUNT') {
-        // ✅ CREDIT TO ACCOUNT
+        // ============================================================
+        // CREDIT TO ACCOUNT
+        // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing ACCOUNT deposit for: {$accountNumber}");
         
         // Find the account
@@ -216,7 +218,9 @@ try {
         }
         
     } else {
-        // ✅ CREDIT TO WALLET (with eWallet PIN)
+        // ============================================================
+        // CREDIT TO WALLET (with eWallet PIN)
+        // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing WALLET deposit for phone: {$phone}");
         
         // Find wallet by phone
@@ -318,53 +322,10 @@ try {
         // --- Generate eWallet PIN for withdrawal ---
         $pin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
         $expiresAt = date('Y-m-d H:i:s', strtotime('+15 minutes'));
-        
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
-        
-        // ✅ CORRECT: hold_status is BOOLEAN, use TRUE for active hold
-        $stmt = $pdo->prepare("
-            INSERT INTO ewallet_pins (
-                transaction_id,
-                recipient_phone,
-                generated_by,
-                pin,
-                is_redeemed,
-                created_at,
-                expires_at,
-                sender_phone,
-                amount,
-                sat_purchased,
-                hold_status
-            ) VALUES (
-                NULL,
-                :recipient_phone,
-                :generated_by,
-                :pin,
-                FALSE,
-                NOW(),
-                :expires_at,
-                :sender_phone,
-                :amount,
-                FALSE,
-                :hold_status
-            ) RETURNING id
-        ");
-        $stmt->execute([
-            ':recipient_phone' => $recipientPhone,
-            ':generated_by' => $userId ?? 1,
-            ':pin' => $pin,
-            ':expires_at' => $expiresAt,
-            ':sender_phone' => $senderPhone,
-            ':amount' => $amount,
-            ':hold_status' => true  // ✅ BOOLEAN - TRUE means active hold
-        ]);
-        $ewalletPinId = $stmt->fetchColumn();
-        
-        error_log("SACCUSSALIS CREDIT_FUNDS: Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}");
-        
-        // --- Create transaction record ---
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
+        // ✅ STEP 1: Create transaction record FIRST (for foreign key)
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -405,18 +366,49 @@ try {
         ]);
         $transactionId = $stmt->fetchColumn();
         
-        // --- Update the eWallet PIN with the transaction ID ---
-        if ($transactionId && $ewalletPinId) {
-            $stmt = $pdo->prepare("
-                UPDATE ewallet_pins 
-                SET transaction_id = :transaction_id 
-                WHERE id = :pin_id
-            ");
-            $stmt->execute([
-                ':transaction_id' => $transactionId,
-                ':pin_id' => $ewalletPinId
-            ]);
-        }
+        error_log("SACCUSSALIS CREDIT_FUNDS: Created transaction {$transactionId} for wallet deposit");
+        
+        // ✅ STEP 2: Insert eWallet PIN with transaction_id (foreign key now satisfied)
+        $stmt = $pdo->prepare("
+            INSERT INTO ewallet_pins (
+                transaction_id,
+                recipient_phone,
+                generated_by,
+                pin,
+                is_redeemed,
+                created_at,
+                expires_at,
+                sender_phone,
+                amount,
+                sat_purchased,
+                hold_status
+            ) VALUES (
+                :transaction_id,
+                :recipient_phone,
+                :generated_by,
+                :pin,
+                FALSE,
+                NOW(),
+                :expires_at,
+                :sender_phone,
+                :amount,
+                FALSE,
+                :hold_status
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':transaction_id' => $transactionId,
+            ':recipient_phone' => $recipientPhone,
+            ':generated_by' => $userId ?? 1,
+            ':pin' => $pin,
+            ':expires_at' => $expiresAt,
+            ':sender_phone' => $senderPhone,
+            ':amount' => $amount,
+            ':hold_status' => true  // ✅ BOOLEAN - TRUE means active hold
+        ]);
+        $ewalletPinId = $stmt->fetchColumn();
+        
+        error_log("SACCUSSALIS CREDIT_FUNDS: Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}, linked to transaction {$transactionId}");
     }
 
     // --- 2. Deduct from settlement account (internal liquidity) ---
@@ -457,6 +449,7 @@ try {
             signature_verified BOOLEAN DEFAULT FALSE,
             destination_asset_type VARCHAR(50) DEFAULT 'WALLET',
             ewallet_pin_id BIGINT,
+            transaction_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
@@ -465,9 +458,9 @@ try {
     $stmt = $pdo->prepare("
         INSERT INTO settlements 
             (settlement_ref, type, issuer_bank, recipient_type, recipient_id, amount, status, 
-             requester, signature_verified, destination_asset_type, ewallet_pin_id, created_at, updated_at) 
+             requester, signature_verified, destination_asset_type, ewallet_pin_id, transaction_id, created_at, updated_at) 
         VALUES 
-            (?, 'SWAP_CREDIT', ?, ?, ?, ?, 'completed', ?, ?, ?, ?, NOW(), NOW())
+            (?, 'SWAP_CREDIT', ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, NOW(), NOW())
     ");
     $stmt->execute([
         $settlementRef,
@@ -478,7 +471,8 @@ try {
         $requester,
         $isValid ? 1 : 0,
         $destinationAssetType,
-        $ewalletPinId
+        $ewalletPinId,
+        $transactionId
     ]);
 
     $pdo->commit();
@@ -512,6 +506,7 @@ try {
         $responsePayload['recipient_phone'] = $phone;
         $responsePayload['message'] = "eWallet deposit successful. PIN: {$pin} - Valid for 15 minutes.";
         $responsePayload['ewallet_pin_id'] = $ewalletPinId;
+        $responsePayload['transaction_id'] = $transactionId;
     } else {
         $responsePayload['message'] = "Funds credited successfully to {$recipientType}";
     }
