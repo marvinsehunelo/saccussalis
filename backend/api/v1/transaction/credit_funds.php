@@ -65,9 +65,6 @@ $accountNumber = $input['account_number'] ?? $input['destination_account'] ?? $i
 if (!$phone && isset($input['destination']['phone'])) {
     $phone = $input['destination']['phone'];
 }
-if (!$phone && isset($input['destination']['account'])) {
-    $phone = $input['destination']['account'];
-}
 if (!$accountNumber && isset($input['destination']['account'])) {
     $accountNumber = $input['destination']['account'];
 }
@@ -120,6 +117,7 @@ $updatedBalance = null;
 $userId = null;
 $pin = null;
 $ewalletPinId = null;
+$transactionId = null;
 
 try {
     $pdo->beginTransaction();
@@ -130,22 +128,29 @@ try {
         // ✅ CREDIT TO ACCOUNT
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing ACCOUNT deposit for: {$accountNumber}");
         
-        // Try to find existing account
+        // Find the account
         $stmt = $pdo->prepare("
-            SELECT a.account_id, a.balance, a.user_id, u.full_name, u.phone
-            FROM accounts a
-            LEFT JOIN users u ON a.user_id = u.user_id
-            WHERE a.account_number = :account_number AND a.status = 'active'
-            FOR UPDATE
+            SELECT account_id, balance, user_id 
+            FROM accounts 
+            WHERE account_number = :account_number AND status = 'active'
         ");
         $stmt->execute([':account_number' => $accountNumber]);
         $account = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if ($account) {
-            // Existing account found
+            // Lock the account for update
+            $stmt = $pdo->prepare("
+                SELECT account_id, balance, user_id 
+                FROM accounts 
+                WHERE account_id = :account_id 
+                FOR UPDATE
+            ");
+            $stmt->execute([':account_id' => $account['account_id']]);
+            $lockedAccount = $stmt->fetch(PDO::FETCH_ASSOC);
+            
             $recipientType = 'ACCOUNT';
-            $recipientId = $account['account_id'];
-            $userId = $account['user_id'];
+            $recipientId = $lockedAccount['account_id'];
+            $userId = $lockedAccount['user_id'];
             
             // Credit account balance
             $stmt = $pdo->prepare("
@@ -207,17 +212,6 @@ try {
             $recipientType = 'ACCOUNT';
             $updatedBalance = $amount;
             
-            // Also create a wallet for the user
-            $stmt = $pdo->prepare("
-                INSERT INTO wallets (user_id, phone, wallet_type, currency, balance, status, created_at)
-                VALUES (:user_id, :phone, 'EWALLET', 'BWP', 0, 'active', NOW())
-                RETURNING wallet_id
-            ");
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':phone' => $userPhone
-            ]);
-            
             error_log("SACCUSSALIS CREDIT_FUNDS: Created new user {$userId}, account {$recipientId} with balance {$updatedBalance}");
         }
         
@@ -225,26 +219,37 @@ try {
         // ✅ CREDIT TO WALLET (with eWallet PIN)
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing WALLET deposit for phone: {$phone}");
         
-        // --- Get or create recipient wallet ---
+        // Find wallet by phone
         $stmt = $pdo->prepare("
-            SELECT w.wallet_id, w.balance, w.user_id, u.full_name, u.phone as user_phone
-            FROM wallets w
-            LEFT JOIN users u ON w.user_id = u.user_id
-            WHERE w.phone = :phone AND w.status = 'active'
-            FOR UPDATE
+            SELECT wallet_id, balance, user_id 
+            FROM wallets 
+            WHERE phone = :phone AND status = 'active'
         ");
         $stmt->execute([':phone' => $phone]);
         $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $walletId = null;
-        $userId = null;
         $recipientPhone = $phone;
         
         if ($wallet) {
-            // Existing wallet found
-            $walletId = $wallet['wallet_id'];
-            $userId = $wallet['user_id'];
-            $recipientPhone = $wallet['user_phone'] ?? $phone;
+            // Lock the wallet for update
+            $stmt = $pdo->prepare("
+                SELECT wallet_id, balance, user_id 
+                FROM wallets 
+                WHERE wallet_id = :wallet_id 
+                FOR UPDATE
+            ");
+            $stmt->execute([':wallet_id' => $wallet['wallet_id']]);
+            $lockedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            $walletId = $lockedWallet['wallet_id'];
+            $userId = $lockedWallet['user_id'];
+            
+            // Get user phone
+            $stmt = $pdo->prepare("SELECT phone FROM users WHERE user_id = :user_id");
+            $stmt->execute([':user_id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $recipientPhone = $user['phone'] ?? $phone;
             
             error_log("SACCUSSALIS CREDIT_FUNDS: Found existing wallet {$walletId} for phone {$phone}");
             
@@ -311,14 +316,12 @@ try {
         error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to wallet {$walletId}, new balance: {$updatedBalance}");
         
         // --- Generate eWallet PIN for withdrawal ---
-        // Generate a 6-digit PIN
         $pin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
         $expiresAt = date('Y-m-d H:i:s', strtotime('+15 minutes'));
         
-        // Get sender phone for the eWallet PIN record
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         
-        // Insert eWallet PIN
+        // Insert eWallet PIN using the actual table schema
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -330,8 +333,8 @@ try {
                 expires_at,
                 sender_phone,
                 amount,
-                source_institution,
-                status
+                sat_purchased,
+                hold_status
             ) VALUES (
                 NULL,
                 :recipient_phone,
@@ -342,7 +345,7 @@ try {
                 :expires_at,
                 :sender_phone,
                 :amount,
-                :source_institution,
+                FALSE,
                 'active'
             ) RETURNING id
         ");
@@ -352,50 +355,50 @@ try {
             ':pin' => $pin,
             ':expires_at' => $expiresAt,
             ':sender_phone' => $senderPhone,
-            ':amount' => $amount,
-            ':source_institution' => $fromBank
+            ':amount' => $amount
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
         error_log("SACCUSSALIS CREDIT_FUNDS: Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}");
         
-        // --- Create transaction record ---
+        // --- Create transaction record using the actual table schema ---
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
                 reference,
                 amount,
-                currency,
                 type,
                 direction,
                 status,
-                source_institution,
-                destination_type,
                 description,
+                requester,
+                signature_verified,
+                verification_method,
                 created_at,
                 updated_at
             ) VALUES (
                 :user_id,
                 :reference,
                 :amount,
-                :currency,
                 'CREDIT',
                 'in',
-                'COMPLETED',
-                :source_institution,
-                'WALLET',
+                'completed',
                 :description,
+                :requester,
+                :sig_verified,
+                :verification_method,
                 NOW(),
                 NOW()
-            ) RETURNING transactions_id
+            ) RETURNING transaction_id
         ");
         $stmt->execute([
             ':user_id' => $userId,
             ':reference' => $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4))),
             ':amount' => $amount,
-            ':currency' => 'BWP',
-            ':source_institution' => $fromBank,
-            ':description' => "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}"
+            ':description' => "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}",
+            ':requester' => $requester,
+            ':sig_verified' => $isValid ? 1 : 0,
+            ':verification_method' => 'certificate'
         ]);
         $transactionId = $stmt->fetchColumn();
         
