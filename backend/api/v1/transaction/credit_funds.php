@@ -321,7 +321,7 @@ try {
         
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         
-        // Insert eWallet PIN using the actual table schema
+        // ✅ FIX: hold_status is VARCHAR, use 'active' string
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -346,7 +346,7 @@ try {
                 :sender_phone,
                 :amount,
                 FALSE,
-                'active'
+                :hold_status
             ) RETURNING id
         ");
         $stmt->execute([
@@ -355,13 +355,16 @@ try {
             ':pin' => $pin,
             ':expires_at' => $expiresAt,
             ':sender_phone' => $senderPhone,
-            ':amount' => $amount
+            ':amount' => $amount,
+            ':hold_status' => 'active'  // ✅ VARCHAR - string value
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
         error_log("SACCUSSALIS CREDIT_FUNDS: Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}");
         
-        // --- Create transaction record using the actual table schema ---
+        // --- Create transaction record ---
+        $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
+        
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -393,7 +396,7 @@ try {
         ");
         $stmt->execute([
             ':user_id' => $userId,
-            ':reference' => $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4))),
+            ':reference' => $reference,
             ':amount' => $amount,
             ':description' => "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}",
             ':requester' => $requester,
