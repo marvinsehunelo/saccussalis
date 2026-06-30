@@ -8,7 +8,7 @@ require_once __DIR__ . '/../../../helpers/CertificateManager.php';
 $input = json_decode(file_get_contents("php://input"), true);
 
 error_log("=== SACCUSSALIS credit_funds.php received ===");
-error_log("Input payload: " . json_encode($input));
+error_log(json_encode($input));
 
 // ============================================================
 // CERTIFICATE-BASED VERIFICATION (REQUIRED)
@@ -48,31 +48,13 @@ error_log("SACCUSSALIS CREDIT_FUNDS: Request verified from {$requester} using ce
 // PROCESS CREDIT
 // ============================================================
 
-// Map fields from different possible sources
 $amount = $input['amount'] ?? $input['value'] ?? null;
-
-// Determine source bank
 $fromBank = $input['from_bank'] ?? $input['source_institution'] ?? $input['institution'] ?? $input['from_institution'] ?? null;
-
-// ✅ Extract destination asset type - default to ACCOUNT for safety
 $destinationAssetType = strtoupper($input['destination_asset_type'] ?? $input['asset_type'] ?? $input['destination_type'] ?? 'ACCOUNT');
 
-error_log("SACCUSSALIS CREDIT_FUNDS: Destination Asset Type from payload: " . ($input['destination_asset_type'] ?? 'NOT SET'));
-error_log("SACCUSSALIS CREDIT_FUNDS: Normalized Asset Type: {$destinationAssetType}");
-
-// Determine destination based on asset type
 $phone = $input['phone'] ?? $input['destination_phone'] ?? $input['beneficiary_phone'] ?? $input['wallet_phone'] ?? null;
 $accountNumber = $input['account_number'] ?? $input['destination_account'] ?? $input['account'] ?? null;
 
-// Also check in nested structures
-if (!$phone && isset($input['destination']['phone'])) {
-    $phone = $input['destination']['phone'];
-}
-if (!$accountNumber && isset($input['destination']['account'])) {
-    $accountNumber = $input['destination']['account'];
-}
-
-// ✅ Validate based on asset type
 if (!$amount || !$fromBank) {
     http_response_code(400);
     echo json_encode([
@@ -84,37 +66,30 @@ if (!$amount || !$fromBank) {
     exit;
 }
 
-// ✅ Validate destination based on asset type
 if ($destinationAssetType === 'ACCOUNT') {
     if (!$accountNumber) {
         http_response_code(400);
         echo json_encode([
             'status' => 'error',
             'processed' => false,
-            'message' => "Destination asset type is ACCOUNT but no account_number provided.",
-            'debug_received' => $input
+            'message' => "Destination asset type is ACCOUNT but no account_number provided."
         ]);
         exit;
     }
-    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Valid ACCOUNT deposit with account_number: {$accountNumber}");
 } else {
-    // WALLET
     if (!$phone) {
         http_response_code(400);
         echo json_encode([
             'status' => 'error',
             'processed' => false,
-            'message' => "Destination asset type is WALLET but no phone provided.",
-            'debug_received' => $input
+            'message' => "Destination asset type is WALLET but no phone provided."
         ]);
         exit;
     }
-    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Valid WALLET deposit with phone: {$phone}");
 }
 
-error_log("SACCUSSALIS CREDIT_FUNDS: Processing: Asset Type={$destinationAssetType}, Amount={$amount}, From={$fromBank}");
+error_log("SACCUSSALIS CREDIT_FUNDS: Asset Type: {$destinationAssetType}, Amount: {$amount}, From: {$fromBank}");
 
-// Initialize variables
 $recipientType = null;
 $recipientId = null;
 $updatedBalance = null;
@@ -126,25 +101,22 @@ $transactionId = null;
 try {
     $pdo->beginTransaction();
 
-    // --- 1. Find or create recipient based on asset type ---
-    
     if ($destinationAssetType === 'ACCOUNT') {
         // ============================================================
-        // ✅ CREDIT TO ACCOUNT - NO eWallet PIN
+        // CREDIT TO ACCOUNT
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing ACCOUNT deposit for: {$accountNumber}");
         
-        // Find the account
+        // ✅ accounts table uses is_frozen, not status
         $stmt = $pdo->prepare("
             SELECT account_id, balance, user_id 
             FROM accounts 
-            WHERE account_number = :account_number AND status = 'active'
+            WHERE account_number = :account_number AND is_frozen = false
         ");
         $stmt->execute([':account_number' => $accountNumber]);
         $account = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if ($account) {
-            // Lock the account for update
             $stmt = $pdo->prepare("
                 SELECT account_id, balance, user_id 
                 FROM accounts 
@@ -158,7 +130,6 @@ try {
             $recipientId = $lockedAccount['account_id'];
             $userId = $lockedAccount['user_id'];
             
-            // Credit account balance
             $stmt = $pdo->prepare("
                 UPDATE accounts 
                 SET balance = balance + :amount, updated_at = NOW() 
@@ -169,23 +140,20 @@ try {
                 ':account_id' => $recipientId
             ]);
             
-            // Get updated balance
             $stmt = $pdo->prepare("SELECT balance FROM accounts WHERE account_id = :account_id");
             $stmt->execute([':account_id' => $recipientId]);
             $updatedAccount = $stmt->fetch(PDO::FETCH_ASSOC);
             $updatedBalance = $updatedAccount['balance'];
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credited {$amount} to existing account {$recipientId}, new balance: {$updatedBalance}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to account {$recipientId}, new balance: {$updatedBalance}");
             
         } else {
-            // ✅ Create new user and account
+            // Create new user and account
             error_log("SACCUSSALIS CREDIT_FUNDS: Creating new user and account for: {$accountNumber}");
             
-            // Generate random password
             $randomPassword = bin2hex(random_bytes(16));
             $hashedPassword = password_hash($randomPassword, PASSWORD_DEFAULT);
             
-            // Create user
             $fullName = $input['account_name'] ?? $input['beneficiary_name'] ?? 'Account Holder';
             $email = $input['email'] ?? $accountNumber . '@saccussalis.bw';
             $userPhone = $input['beneficiary_phone'] ?? $input['phone'] ?? $accountNumber;
@@ -203,10 +171,9 @@ try {
             ]);
             $userId = $stmt->fetchColumn();
             
-            // Create account
             $stmt = $pdo->prepare("
-                INSERT INTO accounts (user_id, account_number, account_type, currency, balance, status, created_at)
-                VALUES (:user_id, :account_number, 'checking', 'BWP', :amount, 'active', NOW())
+                INSERT INTO accounts (user_id, account_number, account_type, currency, balance, created_at, updated_at)
+                VALUES (:user_id, :account_number, 'checking', 'BWP', :amount, NOW(), NOW())
                 RETURNING account_id
             ");
             $stmt->execute([
@@ -218,19 +185,16 @@ try {
             $recipientType = 'ACCOUNT';
             $updatedBalance = $amount;
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Created new user {$userId}, account {$recipientId} with balance {$updatedBalance}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: Created user {$userId}, account {$recipientId} with balance {$updatedBalance}");
         }
-        
-        // ✅ IMPORTANT: NO eWallet PIN for ACCOUNT deposits
-        // Skip PIN generation entirely
         
     } else {
         // ============================================================
-        // ✅ CREDIT TO WALLET - WITH eWallet PIN
+        // CREDIT TO WALLET (with eWallet PIN)
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing WALLET deposit for phone: {$phone}");
         
-        // Find wallet by phone
+        // ✅ wallets table uses status, not is_frozen
         $stmt = $pdo->prepare("
             SELECT wallet_id, balance, user_id 
             FROM wallets 
@@ -243,7 +207,6 @@ try {
         $recipientPhone = $phone;
         
         if ($wallet) {
-            // Lock the wallet for update
             $stmt = $pdo->prepare("
                 SELECT wallet_id, balance, user_id 
                 FROM wallets 
@@ -256,23 +219,19 @@ try {
             $walletId = $lockedWallet['wallet_id'];
             $userId = $lockedWallet['user_id'];
             
-            // Get user phone
             $stmt = $pdo->prepare("SELECT phone FROM users WHERE user_id = :user_id");
             $stmt->execute([':user_id' => $userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             $recipientPhone = $user['phone'] ?? $phone;
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: Found existing wallet {$walletId} for phone {$phone}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: Found wallet {$walletId} for phone {$phone}");
             
         } else {
-            // ✅ Create new user and wallet
             error_log("SACCUSSALIS CREDIT_FUNDS: Creating new user and wallet for phone: {$phone}");
             
-            // Generate random password
             $randomPassword = bin2hex(random_bytes(16));
             $hashedPassword = password_hash($randomPassword, PASSWORD_DEFAULT);
             
-            // Create user
             $fullName = $input['account_name'] ?? $input['beneficiary_name'] ?? 'Wallet User';
             $email = $input['email'] ?? $phone . '@saccussalis.bw';
             
@@ -289,7 +248,6 @@ try {
             ]);
             $userId = $stmt->fetchColumn();
             
-            // Create wallet
             $stmt = $pdo->prepare("
                 INSERT INTO wallets (user_id, phone, wallet_type, currency, balance, status, created_at)
                 VALUES (:user_id, :phone, 'EWALLET', 'BWP', 0, 'active', NOW())
@@ -301,10 +259,10 @@ try {
             ]);
             $walletId = $stmt->fetchColumn();
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: Created new user {$userId}, wallet {$walletId}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: Created user {$userId}, wallet {$walletId}");
         }
         
-        // --- Credit the wallet balance ---
+        // Credit wallet balance
         $stmt = $pdo->prepare("
             UPDATE wallets 
             SET balance = balance + :amount, updated_at = NOW() 
@@ -315,7 +273,6 @@ try {
             ':wallet_id' => $walletId
         ]);
         
-        // Get updated balance
         $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE wallet_id = :wallet_id");
         $stmt->execute([':wallet_id' => $walletId]);
         $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -324,15 +281,15 @@ try {
         $recipientType = 'WALLET';
         $recipientId = $walletId;
         
-        error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credited {$amount} to wallet {$walletId}, new balance: {$updatedBalance}");
+        error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to wallet {$walletId}, new balance: {$updatedBalance}");
         
-        // --- Generate eWallet PIN for withdrawal (ONLY FOR WALLET) ---
+        // Generate eWallet PIN
         $pin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
         $expiresAt = date('Y-m-d H:i:s', strtotime('+15 minutes'));
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
-        // ✅ STEP 1: Create transaction record FIRST (for foreign key)
+        // ✅ Create transaction FIRST
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -375,7 +332,7 @@ try {
         
         error_log("SACCUSSALIS CREDIT_FUNDS: Created transaction {$transactionId} for wallet deposit");
         
-        // ✅ STEP 2: Insert eWallet PIN with transaction_id (foreign key now satisfied)
+        // ✅ Insert eWallet PIN
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -411,19 +368,19 @@ try {
             ':expires_at' => $expiresAt,
             ':sender_phone' => $senderPhone,
             ':amount' => $amount,
-            ':hold_status' => true  // ✅ BOOLEAN - TRUE means active hold
+            ':hold_status' => true
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
-        error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}, linked to transaction {$transactionId}");
+        error_log("SACCUSSALIS CREDIT_FUNDS: Generated PIN {$pin} for phone {$recipientPhone}");
     }
 
-    // --- 2. Deduct from settlement account (internal liquidity) ---
+    // Deduct from settlement account
     $settlementAccountNumber = '10000001';
     $stmt = $pdo->prepare("
         UPDATE accounts 
         SET balance = balance - :amount, updated_at = NOW()
-        WHERE account_number = :acc_num AND balance >= :amount
+        WHERE account_number = :acc_num AND balance >= :amount AND is_frozen = false
         RETURNING account_id, balance
     ");
     $stmt->execute([
@@ -436,31 +393,10 @@ try {
         throw new Exception("Settlement account not found or insufficient funds.");
     }
 
-    error_log("SACCUSSALIS CREDIT_FUNDS: Settlement account {$settlementAccountNumber} new balance: {$settlement['balance']}");
+    error_log("SACCUSSALIS CREDIT_FUNDS: Settlement account new balance: {$settlement['balance']}");
 
-    // --- 3. Create a settlement record with requester info ---
+    // Create settlement record
     $settlementRef = $input['reference'] ?? $input['settlement_ref'] ?? ('SET' . round(microtime(true) * 1000));
-
-    // Ensure settlements table exists with proper columns
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS settlements (
-            id BIGSERIAL PRIMARY KEY,
-            settlement_ref VARCHAR(100) UNIQUE NOT NULL,
-            type VARCHAR(50) NOT NULL,
-            issuer_bank VARCHAR(100) NOT NULL,
-            recipient_type VARCHAR(50) NOT NULL,
-            recipient_id BIGINT NOT NULL,
-            amount DECIMAL(20,4) NOT NULL,
-            status VARCHAR(20) DEFAULT 'pending',
-            requester VARCHAR(100),
-            signature_verified BOOLEAN DEFAULT FALSE,
-            destination_asset_type VARCHAR(50) DEFAULT 'ACCOUNT',
-            ewallet_pin_id BIGINT,
-            transaction_id BIGINT,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    ");
 
     $stmt = $pdo->prepare("
         INSERT INTO settlements 
@@ -484,11 +420,9 @@ try {
 
     $pdo->commit();
 
-    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credit completed successfully - Ref: {$settlementRef}");
+    error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed - Ref: {$settlementRef}");
 
-    // ============================================================
-    // SEND SIGNED RESPONSE WITH CERTIFICATE
-    // ============================================================
+    // Response
     $responsePayload = [
         'status' => 'success',
         'processed' => true,
@@ -506,10 +440,9 @@ try {
         'timestamp' => time()
     ];
     
-    // ✅ Only include PIN for WALLET deposits
     if ($destinationAssetType === 'WALLET' && $pin) {
         $responsePayload['pin'] = $pin;
-        $responsePayload['pin_expires_at'] = $expiresAt ?? date('Y-m-d H:i:s', strtotime('+15 minutes'));
+        $responsePayload['pin_expires_at'] = $expiresAt;
         $responsePayload['recipient_phone'] = $phone;
         $responsePayload['message'] = "eWallet deposit successful. PIN: {$pin} - Valid for 15 minutes.";
         $responsePayload['ewallet_pin_id'] = $ewalletPinId;
