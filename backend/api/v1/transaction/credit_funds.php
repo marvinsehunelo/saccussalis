@@ -8,7 +8,7 @@ require_once __DIR__ . '/../../../helpers/CertificateManager.php';
 $input = json_decode(file_get_contents("php://input"), true);
 
 error_log("=== SACCUSSALIS credit_funds.php received ===");
-error_log(json_encode($input));
+error_log("Input payload: " . json_encode($input));
 
 // ============================================================
 // CERTIFICATE-BASED VERIFICATION (REQUIRED)
@@ -54,8 +54,11 @@ $amount = $input['amount'] ?? $input['value'] ?? null;
 // Determine source bank
 $fromBank = $input['from_bank'] ?? $input['source_institution'] ?? $input['institution'] ?? $input['from_institution'] ?? null;
 
-// ✅ Extract destination asset type
-$destinationAssetType = strtoupper($input['destination_asset_type'] ?? $input['asset_type'] ?? $input['destination_type'] ?? 'WALLET');
+// ✅ Extract destination asset type - default to ACCOUNT for safety
+$destinationAssetType = strtoupper($input['destination_asset_type'] ?? $input['asset_type'] ?? $input['destination_type'] ?? 'ACCOUNT');
+
+error_log("SACCUSSALIS CREDIT_FUNDS: Destination Asset Type from payload: " . ($input['destination_asset_type'] ?? 'NOT SET'));
+error_log("SACCUSSALIS CREDIT_FUNDS: Normalized Asset Type: {$destinationAssetType}");
 
 // Determine destination based on asset type
 $phone = $input['phone'] ?? $input['destination_phone'] ?? $input['beneficiary_phone'] ?? $input['wallet_phone'] ?? null;
@@ -93,6 +96,7 @@ if ($destinationAssetType === 'ACCOUNT') {
         ]);
         exit;
     }
+    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Valid ACCOUNT deposit with account_number: {$accountNumber}");
 } else {
     // WALLET
     if (!$phone) {
@@ -105,10 +109,10 @@ if ($destinationAssetType === 'ACCOUNT') {
         ]);
         exit;
     }
+    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Valid WALLET deposit with phone: {$phone}");
 }
 
-error_log("SACCUSSALIS CREDIT_FUNDS: Asset Type: {$destinationAssetType}, Amount: {$amount}, From: {$fromBank}");
-error_log("SACCUSSALIS CREDIT_FUNDS: Phone: {$phone}, Account: {$accountNumber}");
+error_log("SACCUSSALIS CREDIT_FUNDS: Processing: Asset Type={$destinationAssetType}, Amount={$amount}, From={$fromBank}");
 
 // Initialize variables
 $recipientType = null;
@@ -126,7 +130,7 @@ try {
     
     if ($destinationAssetType === 'ACCOUNT') {
         // ============================================================
-        // CREDIT TO ACCOUNT
+        // ✅ CREDIT TO ACCOUNT - NO eWallet PIN
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing ACCOUNT deposit for: {$accountNumber}");
         
@@ -171,7 +175,7 @@ try {
             $updatedAccount = $stmt->fetch(PDO::FETCH_ASSOC);
             $updatedBalance = $updatedAccount['balance'];
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to existing account {$recipientId}, new balance: {$updatedBalance}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credited {$amount} to existing account {$recipientId}, new balance: {$updatedBalance}");
             
         } else {
             // ✅ Create new user and account
@@ -214,12 +218,15 @@ try {
             $recipientType = 'ACCOUNT';
             $updatedBalance = $amount;
             
-            error_log("SACCUSSALIS CREDIT_FUNDS: Created new user {$userId}, account {$recipientId} with balance {$updatedBalance}");
+            error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Created new user {$userId}, account {$recipientId} with balance {$updatedBalance}");
         }
+        
+        // ✅ IMPORTANT: NO eWallet PIN for ACCOUNT deposits
+        // Skip PIN generation entirely
         
     } else {
         // ============================================================
-        // CREDIT TO WALLET (with eWallet PIN)
+        // ✅ CREDIT TO WALLET - WITH eWallet PIN
         // ============================================================
         error_log("SACCUSSALIS CREDIT_FUNDS: Processing WALLET deposit for phone: {$phone}");
         
@@ -317,9 +324,9 @@ try {
         $recipientType = 'WALLET';
         $recipientId = $walletId;
         
-        error_log("SACCUSSALIS CREDIT_FUNDS: Credited {$amount} to wallet {$walletId}, new balance: {$updatedBalance}");
+        error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credited {$amount} to wallet {$walletId}, new balance: {$updatedBalance}");
         
-        // --- Generate eWallet PIN for withdrawal ---
+        // --- Generate eWallet PIN for withdrawal (ONLY FOR WALLET) ---
         $pin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
         $expiresAt = date('Y-m-d H:i:s', strtotime('+15 minutes'));
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
@@ -408,7 +415,7 @@ try {
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
-        error_log("SACCUSSALIS CREDIT_FUNDS: Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}, linked to transaction {$transactionId}");
+        error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Generated eWallet PIN {$pin} for phone {$recipientPhone}, expires at {$expiresAt}, linked to transaction {$transactionId}");
     }
 
     // --- 2. Deduct from settlement account (internal liquidity) ---
@@ -447,7 +454,7 @@ try {
             status VARCHAR(20) DEFAULT 'pending',
             requester VARCHAR(100),
             signature_verified BOOLEAN DEFAULT FALSE,
-            destination_asset_type VARCHAR(50) DEFAULT 'WALLET',
+            destination_asset_type VARCHAR(50) DEFAULT 'ACCOUNT',
             ewallet_pin_id BIGINT,
             transaction_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
@@ -477,7 +484,7 @@ try {
 
     $pdo->commit();
 
-    error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully - Ref: {$settlementRef}");
+    error_log("SACCUSSALIS CREDIT_FUNDS: ✅ Credit completed successfully - Ref: {$settlementRef}");
 
     // ============================================================
     // SEND SIGNED RESPONSE WITH CERTIFICATE
@@ -499,7 +506,7 @@ try {
         'timestamp' => time()
     ];
     
-    // ✅ If WALLET deposit, include PIN in response
+    // ✅ Only include PIN for WALLET deposits
     if ($destinationAssetType === 'WALLET' && $pin) {
         $responsePayload['pin'] = $pin;
         $responsePayload['pin_expires_at'] = $expiresAt ?? date('Y-m-d H:i:s', strtotime('+15 minutes'));
