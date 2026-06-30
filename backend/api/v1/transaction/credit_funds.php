@@ -321,7 +321,7 @@ try {
         
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         
-        // ✅ FIX: hold_status is VARCHAR, use 'active' string
+        // ✅ CORRECT: hold_status is BOOLEAN, use TRUE for active hold
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -356,7 +356,7 @@ try {
             ':expires_at' => $expiresAt,
             ':sender_phone' => $senderPhone,
             ':amount' => $amount,
-            ':hold_status' => 'active'  // ✅ VARCHAR - string value
+            ':hold_status' => true  // ✅ BOOLEAN - TRUE means active hold
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
