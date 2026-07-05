@@ -6,6 +6,8 @@
  * Supports:
  * - ACCOUNT: Checks accounts table
  * - WALLET: Checks wallets table and user details
+ * 
+ * FIXED: Ambiguous column 'phone' - now fully qualified with table names
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -79,30 +81,36 @@ try {
         error_log("Verifying WALLET: {$identifier}");
         
         // Build the WHERE clause based on identifier type
+        // CRITICAL FIX: Fully qualify column names with table aliases (w. or u.)
         $whereClause = '';
         $params = [];
         
         if ($identifierType === 'phone' || $identifierType === 'msisdn') {
             // Clean phone number for matching
             $cleanPhone = preg_replace('/[^0-9]/', '', $identifier);
-            $whereClause = "phone = :identifier OR REPLACE(phone, '+', '') = :clean_phone";
+            // ✅ FIX: Use w.phone (wallet table) instead of ambiguous 'phone'
+            $whereClause = "w.phone = :identifier OR REPLACE(w.phone, '+', '') = :clean_phone";
             $params['identifier'] = $identifier;
             $params['clean_phone'] = $cleanPhone;
         } elseif ($identifierType === 'email' || $identifierType === 'email_address') {
-            $whereClause = "email = :identifier";
+            // ✅ FIX: Use u.email (users table)
+            $whereClause = "u.email = :identifier";
             $params['identifier'] = $identifier;
         } elseif ($identifierType === 'national_id' || $identifierType === 'national_id_number') {
-            $whereClause = "national_id = :identifier";
+            // ✅ FIX: Use u.national_id (users table) - assuming users table has national_id
+            $whereClause = "u.national_id = :identifier";
             $params['identifier'] = $identifier;
         } else {
-            // Default: try phone or email
+            // Default: try wallet phone or user email
             $cleanPhone = preg_replace('/[^0-9]/', '', $identifier);
-            $whereClause = "phone = :identifier OR REPLACE(phone, '+', '') = :clean_phone OR email = :identifier";
+            // ✅ FIX: Fully qualify all column references
+            $whereClause = "w.phone = :identifier OR REPLACE(w.phone, '+', '') = :clean_phone OR u.email = :identifier";
             $params['identifier'] = $identifier;
             $params['clean_phone'] = $cleanPhone;
         }
         
         // First check if wallet exists
+        // ✅ FIX: All column references are now fully qualified
         $stmt = $pdo->prepare("
             SELECT 
                 w.wallet_id,
@@ -213,6 +221,7 @@ try {
     // ============================================================
     error_log("Verifying ACCOUNT: {$identifier}");
     
+    // ✅ FIX: Fully qualify column references with table aliases
     $stmt = $pdo->prepare("
         SELECT 
             a.account_id,
