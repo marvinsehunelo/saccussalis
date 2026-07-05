@@ -101,9 +101,7 @@ $transactionId = null;
 try {
     $pdo->beginTransaction();
 
-    // ============================================================
-    // FIX: Defer foreign key constraints if possible
-    // ============================================================
+    // Defer foreign key constraints
     try {
         $pdo->exec("SET CONSTRAINTS ALL DEFERRED");
         error_log("SACCUSSALIS CREDIT_FUNDS: Deferred foreign key constraints");
@@ -212,6 +210,7 @@ try {
         
         $walletId = null;
         $recipientPhone = $phone;
+        $fullName = null;
         
         if ($wallet) {
             $stmt = $pdo->prepare("
@@ -226,10 +225,11 @@ try {
             $walletId = $lockedWallet['wallet_id'];
             $userId = $lockedWallet['user_id'];
             
-            $stmt = $pdo->prepare("SELECT phone FROM users WHERE user_id = :user_id");
+            $stmt = $pdo->prepare("SELECT phone, full_name FROM users WHERE user_id = :user_id");
             $stmt->execute([':user_id' => $userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             $recipientPhone = $user['phone'] ?? $phone;
+            $fullName = $user['full_name'] ?? null;
             
             error_log("SACCUSSALIS CREDIT_FUNDS: Found wallet {$walletId} for phone {$phone}");
             
@@ -297,11 +297,11 @@ try {
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
         // ============================================================
-        // FIX: Create transaction with ALL required columns
+        // FIX: Create transaction with correct data types
         // ============================================================
         $description = "eWallet deposit of {$amount} BWP from {$fromBank}";
         
-        // ✅ FIX: Include ALL required columns from your transactions table
+        // ✅ FIX: Use NULL for integer columns instead of string values
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -332,9 +332,9 @@ try {
                 :requester,
                 :sig_verified,
                 :verification_method,
-                :from_account,
-                :to_account,
-                :external_bank_id,
+                NULL,
+                NULL,
+                NULL,
                 :purpose,
                 :beneficiary_name,
                 NOW(),
@@ -352,9 +352,6 @@ try {
             ':requester' => $requester,
             ':sig_verified' => $isValid ? 1 : 0,
             ':verification_method' => 'certificate',
-            ':from_account' => $fromBank,
-            ':to_account' => $recipientPhone,
-            ':external_bank_id' => $fromBank,
             ':purpose' => 'EWALLET_DEPOSIT',
             ':beneficiary_name' => $fullName ?? 'Wallet User'
         ]);
@@ -447,7 +444,7 @@ try {
     error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully");
 
     // ============================================================
-    // RESPONSE - FIXED TYPO
+    // RESPONSE
     // ============================================================
     $responsePayload = [
         'status' => 'success',
@@ -465,10 +462,9 @@ try {
     ];
     
     if ($destinationAssetType === 'WALLET' && $pin) {
-        // ✅ FIXED: Changed => to =
         $responsePayload['pin'] = $pin;
         $responsePayload['pin_expires_at'] = $expiresAt;
-        $responsePayload['recipient_phone'] = $phone;  // ✅ FIXED
+        $responsePayload['recipient_phone'] = $phone;
         $responsePayload['message'] = "eWallet deposit successful. PIN: {$pin} - Valid for 15 minutes.";
         $responsePayload['ewallet_pin_id'] = $ewalletPinId;
         $responsePayload['transaction_id'] = $transactionId;
