@@ -297,9 +297,11 @@ try {
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
         // ============================================================
-        // FIX: Create transaction with proper reference
+        // FIX: Create transaction with ALL required columns
         // ============================================================
-        $description = "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}";
+        $description = "eWallet deposit of {$amount} BWP from {$fromBank}";
+        
+        // ✅ FIX: Include ALL required columns from your transactions table
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -312,19 +314,29 @@ try {
                 requester,
                 signature_verified,
                 verification_method,
+                from_account,
+                to_account,
+                external_bank_id,
+                purpose,
+                beneficiary_name,
                 created_at,
                 updated_at
             ) VALUES (
                 :user_id,
                 :reference,
                 :amount,
-                'CREDIT',
-                'in',
-                'completed',
+                :type,
+                :direction,
+                :status,
                 :description,
                 :requester,
                 :sig_verified,
                 :verification_method,
+                :from_account,
+                :to_account,
+                :external_bank_id,
+                :purpose,
+                :beneficiary_name,
                 NOW(),
                 NOW()
             ) RETURNING transaction_id
@@ -333,10 +345,18 @@ try {
             ':user_id' => $userId,
             ':reference' => $reference,
             ':amount' => $amount,
+            ':type' => 'CREDIT',
+            ':direction' => 'in',
+            ':status' => 'completed',
             ':description' => $description,
             ':requester' => $requester,
             ':sig_verified' => $isValid ? 1 : 0,
-            ':verification_method' => 'certificate'
+            ':verification_method' => 'certificate',
+            ':from_account' => $fromBank,
+            ':to_account' => $recipientPhone,
+            ':external_bank_id' => $fromBank,
+            ':purpose' => 'EWALLET_DEPOSIT',
+            ':beneficiary_name' => $fullName ?? 'Wallet User'
         ]);
         $transactionId = $stmt->fetchColumn();
         
@@ -344,7 +364,6 @@ try {
         
         // ============================================================
         // FIX: Verify transaction exists before inserting PIN
-        // This ensures the foreign key constraint won't fail
         // ============================================================
         $verifyStmt = $pdo->prepare("SELECT transaction_id FROM transactions WHERE transaction_id = :id");
         $verifyStmt->execute([':id' => $transactionId]);
@@ -428,7 +447,7 @@ try {
     error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully");
 
     // ============================================================
-    // RESPONSE
+    // RESPONSE - FIXED TYPO
     // ============================================================
     $responsePayload = [
         'status' => 'success',
@@ -446,9 +465,10 @@ try {
     ];
     
     if ($destinationAssetType === 'WALLET' && $pin) {
+        // ✅ FIXED: Changed => to =
         $responsePayload['pin'] = $pin;
         $responsePayload['pin_expires_at'] = $expiresAt;
-        $responsePayload['recipient_phone'] => $phone;
+        $responsePayload['recipient_phone'] = $phone;  // ✅ FIXED
         $responsePayload['message'] = "eWallet deposit successful. PIN: {$pin} - Valid for 15 minutes.";
         $responsePayload['ewallet_pin_id'] = $ewalletPinId;
         $responsePayload['transaction_id'] = $transactionId;
