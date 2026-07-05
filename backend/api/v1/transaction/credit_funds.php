@@ -101,6 +101,16 @@ $transactionId = null;
 try {
     $pdo->beginTransaction();
 
+    // ============================================================
+    // FIX: Defer foreign key constraints if possible
+    // ============================================================
+    try {
+        $pdo->exec("SET CONSTRAINTS ALL DEFERRED");
+        error_log("SACCUSSALIS CREDIT_FUNDS: Deferred foreign key constraints");
+    } catch (Exception $e) {
+        error_log("SACCUSSALIS CREDIT_FUNDS: Could not defer constraints: " . $e->getMessage());
+    }
+
     if ($destinationAssetType === 'ACCOUNT') {
         // ============================================================
         // CREDIT TO ACCOUNT
@@ -286,7 +296,10 @@ try {
         $senderPhone = $input['sender_phone'] ?? $fromBank . '_DEPOSIT';
         $reference = $input['reference'] ?? ('DEP_' . time() . '_' . bin2hex(random_bytes(4)));
         
-        // Create transaction FIRST
+        // ============================================================
+        // FIX: Create transaction with proper reference
+        // ============================================================
+        $description = "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}";
         $stmt = $pdo->prepare("
             INSERT INTO transactions (
                 user_id,
@@ -320,7 +333,7 @@ try {
             ':user_id' => $userId,
             ':reference' => $reference,
             ':amount' => $amount,
-            ':description' => "eWallet deposit of {$amount} BWP from {$fromBank}. PIN: {$pin}",
+            ':description' => $description,
             ':requester' => $requester,
             ':sig_verified' => $isValid ? 1 : 0,
             ':verification_method' => 'certificate'
@@ -329,7 +342,23 @@ try {
         
         error_log("SACCUSSALIS CREDIT_FUNDS: Created transaction {$transactionId} for wallet deposit");
         
-        // Insert eWallet PIN
+        // ============================================================
+        // FIX: Verify transaction exists before inserting PIN
+        // This ensures the foreign key constraint won't fail
+        // ============================================================
+        $verifyStmt = $pdo->prepare("SELECT transaction_id FROM transactions WHERE transaction_id = :id");
+        $verifyStmt->execute([':id' => $transactionId]);
+        $exists = $verifyStmt->fetchColumn();
+        
+        if (!$exists) {
+            throw new Exception("Transaction {$transactionId} was not created successfully - cannot insert PIN");
+        }
+        
+        error_log("SACCUSSALIS CREDIT_FUNDS: Verified transaction {$transactionId} exists");
+        
+        // ============================================================
+        // Insert eWallet PIN (now safe with existing transaction)
+        // ============================================================
         $stmt = $pdo->prepare("
             INSERT INTO ewallet_pins (
                 transaction_id,
@@ -369,10 +398,12 @@ try {
         ]);
         $ewalletPinId = $stmt->fetchColumn();
         
-        error_log("SACCUSSALIS CREDIT_FUNDS: Generated PIN {$pin} for phone {$recipientPhone}");
+        error_log("SACCUSSALIS CREDIT_FUNDS: Generated PIN {$pin} for phone {$recipientPhone}, ewallet_pin_id: {$ewalletPinId}");
     }
 
+    // ============================================================
     // Deduct from settlement account
+    // ============================================================
     $settlementAccountNumber = '10000001';
     $stmt = $pdo->prepare("
         UPDATE accounts 
@@ -396,7 +427,9 @@ try {
 
     error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully");
 
-    // Response
+    // ============================================================
+    // RESPONSE
+    // ============================================================
     $responsePayload = [
         'status' => 'success',
         'processed' => true,
@@ -415,7 +448,7 @@ try {
     if ($destinationAssetType === 'WALLET' && $pin) {
         $responsePayload['pin'] = $pin;
         $responsePayload['pin_expires_at'] = $expiresAt;
-        $responsePayload['recipient_phone'] = $phone;
+        $responsePayload['recipient_phone'] => $phone;
         $responsePayload['message'] = "eWallet deposit successful. PIN: {$pin} - Valid for 15 minutes.";
         $responsePayload['ewallet_pin_id'] = $ewalletPinId;
         $responsePayload['transaction_id'] = $transactionId;
