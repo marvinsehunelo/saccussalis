@@ -133,6 +133,7 @@
             border-radius: 4px; margin-top: 10px;
         }
         .action-btn:hover { background: #27ae60; }
+        .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .secondary-btn { background: #e67e22; color: white; }
         .secondary-btn:hover { background: #d35400; }
         
@@ -142,10 +143,11 @@
         .response-box {
             margin-top: 20px; padding: 10px; background: rgba(0,0,0,0.5);
             border-left: 3px solid #2ecc71; font-size: 11px; border-radius: 4px;
-            color: #88ff88;
+            color: #88ff88; min-height: 60px; white-space: pre-wrap;
         }
         .response-box.error { border-left-color: #e74c3c; color: #ff8888; }
         .response-box.success { border-left-color: #2ecc71; color: #88ff88; background: rgba(46,204,113,0.1); }
+        .response-box.info { border-left-color: #3498db; color: #88ccff; background: rgba(52,152,219,0.1); }
         
         .screen-footer { padding-top: 10px; border-top: 1px solid #2ecc71; margin-top: 10px; }
         .footer-message { font-size: 9px; color: #2ecc71; text-align: center; letter-spacing: 1px; }
@@ -269,6 +271,7 @@
                                     <button class="action-btn secondary-btn" onclick="completeSAT()">💵 Dispense</button>
                                 </div>
                                 <input type="hidden" id="trace_number">
+                                <input type="hidden" id="sat_id">
                             </div>
 
                             <div id="responseBox" class="response-box">✅ Ready for transaction.</div>
@@ -324,8 +327,13 @@
     </div>
 
     <script>
+        // Configuration - Update these to match your server
+        const API_BASE = '/backend/api/v1';
+        const ATM_ID = 1; // Your ATM ID from the database
+        
         // Current focused input
         let currentFocus = null;
+        let isProcessing = false;
         
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
@@ -409,7 +417,7 @@
             showResponse(`Amount set to P${amount}`, 'success');
         }
         
-        function showResponse(msg, type) {
+        function showResponse(msg, type = 'info') {
             const box = document.getElementById('responseBox');
             box.className = `response-box ${type}`;
             box.textContent = msg;
@@ -425,88 +433,231 @@
             }
         }
         
-        function showModal(title, message, amount = null) {
+        function showModal(title, message, amount = null, icon = '✅') {
+            document.getElementById('modalIcon').textContent = icon;
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalMessage').textContent = message;
             if (amount) {
                 document.getElementById('modalAmount').innerHTML = `P${parseFloat(amount).toFixed(2)}`;
+                document.getElementById('modalAmount').style.display = 'block';
+            } else {
+                document.getElementById('modalAmount').style.display = 'none';
             }
             document.getElementById('transactionModal').style.display = 'flex';
         }
         
         function closeModal() {
             document.getElementById('transactionModal').style.display = 'none';
-            // Clear inputs
-            document.getElementById('phone').value = '';
+            // Clear sensitive inputs but keep phone for convenience
             document.getElementById('ewallet_pin').value = '';
             document.getElementById('ewallet_amount').value = '';
             document.getElementById('sat_number').value = '';
             document.getElementById('sat_pin').value = '';
             document.getElementById('sat_amount').value = '';
             document.getElementById('trace_number').value = '';
+            document.getElementById('sat_id').value = '';
             showResponse('Ready for next transaction', 'info');
         }
         
-        // Ewallet Cashout
+        // Generic API call function
+        async function callAPI(endpoint, data) {
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-ATM-ID': ATM_ID,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+        
+        // ============================================================
+        // E-WALLET CASOUT - Calls backend/atm/ewallet_cashout.php
+        // ============================================================
         async function cashoutEwallet() {
+            if (isProcessing) return;
+            
             const phone = document.getElementById('phone').value.trim();
             const pin = document.getElementById('ewallet_pin').value.trim();
             const amount = parseFloat(document.getElementById('ewallet_amount').value);
             
-            if (!phone) { showResponse('Enter phone number', 'error'); return; }
-            if (!pin) { showResponse('Enter PIN', 'error'); return; }
-            if (!amount || amount < 10) { showResponse('Enter valid amount (min P10)', 'error'); return; }
+            // Validation
+            if (!phone) { showResponse('❌ Enter phone number', 'error'); return; }
+            if (!pin) { showResponse('❌ Enter PIN', 'error'); return; }
+            if (!amount || amount < 10) { showResponse('❌ Enter valid amount (min P10)', 'error'); return; }
             
+            isProcessing = true;
             showLoading(true, 'Verifying e-wallet...');
             
-            // Simulate API call
-            setTimeout(() => {
+            try {
+                // Call the ewallet cashout endpoint
+                const result = await callAPI('/atm/ewallet_cashout.php', {
+                    atm_id: ATM_ID,
+                    phone: phone,
+                    pin: pin,
+                    amount: amount
+                });
+                
                 showLoading(false);
-                const ref = 'EWT' + Date.now();
-                showModal('CASH DISPENSED', `Ewallet withdrawal successful\nPhone: ${phone}`, amount);
-                showResponse(`✓ Approved! Ref: ${ref}`, 'success');
-            }, 2000);
+                
+                if (result.status === 'APPROVED') {
+                    showModal(
+                        '💵 CASH DISPENSED',
+                        `Ewallet withdrawal successful\nPhone: ${phone}\nRef: ${result.reference || 'N/A'}`,
+                        result.amount || amount,
+                        '💵'
+                    );
+                    showResponse(`✅ Approved! ${result.message}`, 'success');
+                } else {
+                    showResponse(`❌ ${result.message || 'Transaction declined'}`, 'error');
+                }
+            } catch (error) {
+                showLoading(false);
+                showResponse(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                isProcessing = false;
+            }
         }
         
-        // SAT Authorization
+        // ============================================================
+        // SAT AUTHORIZATION - Calls backend/atm/sat_cashout.php
+        // ============================================================
         async function authorizeSAT() {
+            if (isProcessing) return;
+            
             const satNumber = document.getElementById('sat_number').value.trim();
             const pin = document.getElementById('sat_pin').value.trim();
             const amount = parseFloat(document.getElementById('sat_amount').value);
             
-            if (!satNumber) { showResponse('Enter SAT number', 'error'); return; }
-            if (!pin) { showResponse('Enter SAT PIN', 'error'); return; }
-            if (!amount || amount < 10) { showResponse('Enter valid amount', 'error'); return; }
+            // Validation
+            if (!satNumber) { showResponse('❌ Enter SAT number', 'error'); return; }
+            if (!pin) { showResponse('❌ Enter SAT PIN', 'error'); return; }
+            if (!amount || amount < 10) { showResponse('❌ Enter valid amount', 'error'); return; }
             
+            isProcessing = true;
             showLoading(true, 'Authorizing SAT...');
             
-            setTimeout(() => {
+            try {
+                // Call SAT authorization endpoint
+                const result = await callAPI('/atm/sat_cashout.php', {
+                    atm_id: ATM_ID,
+                    sat_number: satNumber,
+                    pin: pin,
+                    amount: amount
+                });
+                
                 showLoading(false);
-                const trace = 'TRC' + Date.now();
-                document.getElementById('trace_number').value = trace;
-                showResponse(`✓ SAT Authorized! Trace: ${trace}\nPress DISPENSE to get cash`, 'success');
-            }, 1500);
+                
+                if (result.status === 'APPROVED') {
+                    document.getElementById('trace_number').value = result.trace_number || ('TRC' + Date.now());
+                    if (result.sat_id) {
+                        document.getElementById('sat_id').value = result.sat_id;
+                    }
+                    showResponse(
+                        `✅ SAT Authorized!\nTrace: ${result.trace_number}\nPress DISPENSE to get cash`,
+                        'success'
+                    );
+                } else {
+                    showResponse(`❌ ${result.message || 'Authorization failed'}`, 'error');
+                }
+            } catch (error) {
+                showLoading(false);
+                showResponse(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                isProcessing = false;
+            }
         }
         
-        // SAT Completion
+        // ============================================================
+        // SAT COMPLETION (DISPENSE) - Calls backend/atm/sat_complete.php
+        // ============================================================
         async function completeSAT() {
+            if (isProcessing) return;
+            
             const trace = document.getElementById('trace_number').value;
+            const satNumber = document.getElementById('sat_number').value.trim();
             const amount = parseFloat(document.getElementById('sat_amount').value);
             
             if (!trace) {
-                showResponse('Please authorize SAT first', 'error');
+                showResponse('❌ Please authorize SAT first', 'error');
                 return;
             }
             
-            showLoading(true, 'Dispensing cash...');
+            if (!satNumber) {
+                showResponse('❌ SAT number is required', 'error');
+                return;
+            }
             
-            setTimeout(() => {
+            isProcessing = true;
+            showLoading(true, '💵 Dispensing cash...');
+            
+            try {
+                // Call SAT completion/dispense endpoint
+                const result = await callAPI('/atm/sat_complete.php', {
+                    atm_id: ATM_ID,
+                    sat_number: satNumber,
+                    trace_number: trace,
+                    amount: amount
+                });
+                
                 showLoading(false);
-                showModal('CASH DISPENSED', 'SAT withdrawal successful\nPlease take your cash', amount);
-                showResponse('✓ Cash dispensed!', 'success');
-                document.getElementById('trace_number').value = '';
-            }, 2000);
+                
+                if (result.status === 'COMPLETED' || result.status === 'APPROVED') {
+                    showModal(
+                        '💵 CASH DISPENSED',
+                        `SAT withdrawal successful\nPlease take your cash\nRef: ${result.reference || trace}`,
+                        result.amount || amount,
+                        '💵'
+                    );
+                    showResponse(`✅ ${result.message || 'Cash dispensed!'}`, 'success');
+                    document.getElementById('trace_number').value = '';
+                    document.getElementById('sat_id').value = '';
+                } else {
+                    showResponse(`❌ ${result.message || 'Dispense failed'}`, 'error');
+                }
+            } catch (error) {
+                showLoading(false);
+                showResponse(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                isProcessing = false;
+            }
         }
+        
+        // ============================================================
+        // HELPER: Test connection to backend
+        // ============================================================
+        async function testConnection() {
+            try {
+                const response = await fetch(`${API_BASE}/balance.php`, {
+                    method: 'GET',
+                    headers: {
+                        'X-ATM-ID': ATM_ID
+                    }
+                });
+                if (response.ok) {
+                    showResponse('✅ Connected to SACCUSSALIS backend', 'success');
+                } else {
+                    showResponse(`⚠️ Backend returned ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showResponse(`❌ Cannot connect to backend: ${error.message}`, 'error');
+            }
+        }
+        
+        // Test connection on load
+        setTimeout(testConnection, 1000);
     </script>
 </body>
 </html>
