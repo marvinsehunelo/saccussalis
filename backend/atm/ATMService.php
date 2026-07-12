@@ -4,6 +4,9 @@ require_once __DIR__ . '/../db.php';
 class ATMService
 {
     private PDO $pdo;
+    
+    // ATM denominations/notes available
+    private array $denominations = [200, 100, 50, 20, 10];
 
     public function __construct()
     {
@@ -46,14 +49,21 @@ class ATMService
         $stmt->execute([$amount, $atmId]);
     }
 
-    private function insertAtmTransaction(int $atmId, ?int $userId, string $reference, float $amount, string $status): void
+    private function insertAtmTransaction(int $atmId, ?int $userId, string $reference, float $amount, string $status, ?array $notes = null): void
     {
         $stmt = $this->pdo->prepare("
             INSERT INTO atm_transactions (
-                atm_id, user_id, transaction_reference, amount, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, NOW())
+                atm_id, user_id, transaction_reference, amount, status, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
         ");
-        $stmt->execute([$atmId, $userId, $reference, $amount, $status]);
+        $stmt->execute([
+            $atmId, 
+            $userId, 
+            $reference, 
+            $amount, 
+            $status,
+            $notes ? json_encode($notes) : null
+        ]);
     }
 
     private function postLedgerEntry(
@@ -103,14 +113,93 @@ class ATMService
         }
     }
 
+    /**
+     * Calculate the optimal note combination for a given amount
+     * Returns array of note denominations and count
+     */
+    private function calculateNotes(float $amount): array
+    {
+        $remaining = (int)$amount;
+        $notes = [];
+        
+        foreach ($this->denominations as $denom) {
+            if ($remaining >= $denom) {
+                $count = floor($remaining / $denom);
+                $notes[$denom] = $count;
+                $remaining -= $count * $denom;
+            }
+        }
+        
+        // If there's remaining amount that can't be dispensed with available notes
+        if ($remaining > 0) {
+            throw new Exception("Amount cannot be dispensed with available denominations. Please use multiples of " . min($this->denominations));
+        }
+        
+        return $notes;
+    }
+
+    /**
+     * Get wallet balance for a user
+     */
+    private function getWalletBalance(string $phone): array
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT w.wallet_id, w.balance, w.phone, u.user_id
+            FROM wallets w
+            JOIN users u ON w.user_id = u.user_id
+            WHERE u.phone = ? OR u.phone = ?
+            AND w.status = 'active'
+        ");
+        $stmt->execute([$phone, ltrim($phone, '+')]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$result) {
+            throw new Exception("Wallet not found for phone: {$phone}");
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Deduct from wallet balance
+     */
+    private function deductWalletBalance(int $walletId, float $amount): void
+    {
+        $stmt = $this->pdo->prepare("
+            UPDATE wallets
+            SET balance = balance - ?,
+                updated_at = NOW()
+            WHERE wallet_id = ?
+            AND balance >= ?
+        ");
+        $stmt->execute([$amount, $walletId, $amount]);
+        
+        if ($stmt->rowCount() === 0) {
+            throw new Exception("Insufficient wallet balance");
+        }
+    }
+
+    /**
+     * Cashout Ewallet - Validates PIN and processes withdrawal with note denominations
+     */
     public function cashoutEwallet(int $atmId, string $phone, string $pin, float $amount): array
     {
         try {
             $this->pdo->beginTransaction();
 
+            // 1. Get and validate ATM
             $atm = $this->getAtmForUpdate($atmId);
             $this->ensureAtmHasCash($atm, $amount);
 
+            // 2. Get wallet balance
+            $wallet = $this->getWalletBalance($phone);
+            
+            // 3. Check if wallet has sufficient balance
+            if ((float)$wallet['balance'] < $amount) {
+                throw new Exception("Insufficient wallet balance. Available: P" . number_format($wallet['balance'], 2) . ", Requested: P" . number_format($amount, 2));
+            }
+
+            // 4. Validate Ewallet PIN (from the ewallet_pins table)
             $stmt = $this->pdo->prepare("
                 SELECT *
                 FROM ewallet_pins
@@ -122,59 +211,104 @@ class ATMService
                 FOR UPDATE
             ");
             $stmt->execute([$phone]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$row) {
-                throw new Exception("Invalid or expired PIN");
+            if (!$pinRecord) {
+                throw new Exception("No active PIN found for this phone");
             }
 
-            // If your pin is stored plain text in DB:
-            if ((string)$row['pin'] !== (string)$pin) {
+            // Verify PIN (plain text comparison as per your code)
+            if ((string)$pinRecord['pin'] !== (string)$pin) {
+                // Log failed attempt
+                $stmt = $this->pdo->prepare("
+                    UPDATE ewallet_pins
+                    SET attempts = attempts + 1,
+                        last_attempt_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([$pinRecord['id']]);
                 throw new Exception("Incorrect PIN");
             }
 
-            if ((float)$row['amount'] !== (float)$amount) {
-                throw new Exception("Amount mismatch");
+            // 5. Calculate note denominations
+            $notes = $this->calculateNotes($amount);
+            $noteSummary = [];
+            foreach ($notes as $denom => $count) {
+                $noteSummary[] = "{$count} x P{$denom}";
             }
 
-            $reference = 'EWL-ATM-' . $row['id'] . '-' . time();
+            // 6. Generate reference
+            $reference = 'EWL-ATM-' . $pinRecord['id'] . '-' . time();
 
+            // 7. Mark PIN as redeemed
             $stmt = $this->pdo->prepare("
                 UPDATE ewallet_pins
                 SET is_redeemed = TRUE,
                     redeemed_at = NOW(),
-                    redeemed_by = ?
+                    redeemed_by = ?,
+                    redeemed_amount = ?,
+                    notes = ?,
+                    status = 'REDEEMED'
                 WHERE id = ?
             ");
-            $stmt->execute(['ATM-' . $atmId, $row['id']]);
+            $stmt->execute([
+                'ATM-' . $atmId,
+                $amount,
+                json_encode(['notes' => $notes]),
+                $pinRecord['id']
+            ]);
 
+            // 8. Deduct from wallet balance
+            $this->deductWalletBalance($wallet['wallet_id'], $amount);
+
+            // 9. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            $this->insertAtmTransaction($atmId, null, $reference, $amount, 'SUCCESS');
+            // 10. Record ATM transaction with note details
+            $this->insertAtmTransaction(
+                $atmId, 
+                $wallet['user_id'], 
+                $reference, 
+                $amount, 
+                'SUCCESS',
+                [
+                    'notes' => $notes,
+                    'note_summary' => implode(', ', $noteSummary),
+                    'wallet_id' => $wallet['wallet_id'],
+                    'phone' => $phone
+                ]
+            );
 
-            // DR wallet liability control / CR ATM cash asset
+            // 11. Post ledger entries
+            // DR: Wallet Liability (decrease liability) 
+            // CR: ATM Cash Asset (decrease asset)
             $this->postLedgerEntry(
                 $reference,
-                'WALLET-CONTROL',
+                'WALLET-LIABILITY',
                 $atm['atm_code'],
                 $amount,
                 'ATM_CASHOUT',
-                'Ewallet cardless cashout',
-                'Ewallet PIN redeemed at ATM'
+                "Ewallet cashout - " . implode(', ', $noteSummary),
+                "Phone: {$phone}, Wallet: {$wallet['wallet_id']}"
             );
 
-            // Running balances if you maintain them manually
-            $this->updateLedgerAccountBalance('WALLET-CONTROL', $amount);
-            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);
+            // 12. Update ledger balances
+            $this->updateLedgerAccountBalance('WALLET-LIABILITY', -$amount); // Decrease liability
+            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);    // Decrease ATM cash
 
             $this->pdo->commit();
 
             return [
                 "status" => "APPROVED",
-                "message" => "Dispense Cash",
+                "message" => "Cash dispensed successfully",
                 "reference" => $reference,
-                "amount" => $amount
+                "amount" => $amount,
+                "notes" => $notes,
+                "note_summary" => implode(', ', $noteSummary),
+                "wallet_balance" => (float)$wallet['balance'] - $amount,
+                "phone" => $phone
             ];
+
         } catch (Exception $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
@@ -186,6 +320,43 @@ class ATMService
             ];
         }
     }
+
+    /**
+     * Get wallet balance for display
+     */
+    public function getBalance(string $phone): array
+    {
+        try {
+            $wallet = $this->getWalletBalance($phone);
+            
+            return [
+                "status" => "SUCCESS",
+                "balance" => (float)$wallet['balance'],
+                "phone" => $wallet['phone'],
+                "wallet_id" => $wallet['wallet_id']
+            ];
+        } catch (Exception $e) {
+            return [
+                "status" => "ERROR",
+                "message" => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Get available ATM denominations
+     */
+    public function getDenominations(): array
+    {
+        return [
+            "status" => "SUCCESS",
+            "denominations" => $this->denominations
+        ];
+    }
+
+    // ============================================================
+    // SAT Methods (unchanged from your original)
+    // ============================================================
 
     public function authorizeSAT(int $atmId, string $satNumber, string $pin, float $amount): array
     {
@@ -295,29 +466,56 @@ class ATMService
             $amount = (float)$sat['amount'];
             $this->ensureAtmHasCash($atm, $amount);
 
+            // Calculate notes for SAT as well
+            $notes = $this->calculateNotes($amount);
+            $noteSummary = [];
+            foreach ($notes as $denom => $count) {
+                $noteSummary[] = "{$count} x P{$denom}";
+            }
+
             $dispenseTrace = 'DSP-' . $traceNumber;
 
             $stmt = $this->pdo->prepare("
                 UPDATE sat_tokens
                 SET status = 'USED',
                     processing = FALSE,
-                    used_at = NOW()
+                    used_at = NOW(),
+                    notes = ?
                 WHERE sat_id = ?
             ");
-            $stmt->execute([$sat['sat_id']]);
+            $stmt->execute([
+                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)]),
+                $sat['sat_id']
+            ]);
 
             $stmt = $this->pdo->prepare("
                 UPDATE atm_authorizations
-                SET dispense_trace = ?
+                SET dispense_trace = ?,
+                    notes = ?
                 WHERE trace_number = ?
             ");
-            $stmt->execute([$dispenseTrace, $traceNumber]);
+            $stmt->execute([
+                $dispenseTrace,
+                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)]),
+                $traceNumber
+            ]);
 
             $this->reduceAtmCash($atmId, $amount);
 
             $reference = 'SAT-CASHOUT-' . $sat['sat_id'] . '-' . time();
 
-            $this->insertAtmTransaction($atmId, null, $reference, $amount, 'SUCCESS');
+            $this->insertAtmTransaction(
+                $atmId, 
+                null, 
+                $reference, 
+                $amount, 
+                'SUCCESS',
+                [
+                    'notes' => $notes,
+                    'note_summary' => implode(', ', $noteSummary),
+                    'sat_number' => $satNumber
+                ]
+            );
 
             // DR interbank receivable / CR ATM cash
             $this->postLedgerEntry(
@@ -326,8 +524,8 @@ class ATMService
                 $atm['atm_code'],
                 $amount,
                 'SAT_CASHOUT',
-                'SAT cashout completed',
-                'ATM dispensed cash for SAT'
+                'SAT cashout completed - ' . implode(', ', $noteSummary),
+                'ATM dispensed cash for SAT: ' . $satNumber
             );
 
             $this->updateLedgerAccountBalance('ASSET-INTERBANK-REC', $amount);
@@ -341,14 +539,16 @@ class ATMService
                     fee,
                     net_amount,
                     status,
+                    notes,
                     created_at
-                ) VALUES (?, ?, ?, 0, ?, 'PENDING', NOW())
+                ) VALUES (?, ?, ?, 0, ?, 'PENDING', ?, NOW())
             ");
             $stmt->execute([
                 $satNumber,
                 $sat['issuer_bank'] ?? 'UNKNOWN',
                 $amount,
-                $amount
+                $amount,
+                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)])
             ]);
 
             $this->pdo->commit();
@@ -357,7 +557,9 @@ class ATMService
                 "status" => "COMPLETED",
                 "reference" => $reference,
                 "dispense_trace" => $dispenseTrace,
-                "amount" => $amount
+                "amount" => $amount,
+                "notes" => $notes,
+                "note_summary" => implode(', ', $noteSummary)
             ];
         } catch (Exception $e) {
             if ($this->pdo->inTransaction()) {
