@@ -139,48 +139,61 @@ class ATMService
     }
 
     /**
-     * Get wallet balance for a user
+     * Get wallet balance for a user from the ewallet_pins table
+     * Since the balance is stored in the PIN record
      */
-    private function getWalletBalance(string $phone): array
+    private function getEwalletBalance(string $phone): array
     {
         $stmt = $this->pdo->prepare("
-            SELECT w.wallet_id, w.balance, w.phone, u.user_id
-            FROM wallets w
-            JOIN users u ON w.user_id = u.user_id
-            WHERE u.phone = ? OR u.phone = ?
-            AND w.status = 'active'
+            SELECT 
+                id,
+                amount,
+                sender_phone,
+                recipient_phone,
+                transaction_id,
+                sat_purchased,
+                is_redeemed,
+                expires_at
+            FROM ewallet_pins
+            WHERE recipient_phone = ?
+              AND is_redeemed = FALSE
+              AND expires_at > NOW()
+              AND (hold_status IS NULL OR hold_status != 'HELD')
+            ORDER BY id DESC
+            LIMIT 1
         ");
-        $stmt->execute([$phone, ltrim($phone, '+')]);
+        $stmt->execute([$phone]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if (!$result) {
-            throw new Exception("Wallet not found for phone: {$phone}");
+            throw new Exception("No active e-wallet balance found for phone: {$phone}");
         }
         
         return $result;
     }
 
     /**
-     * Deduct from wallet balance
+     * Get total available balance across all unredeemed pins for a phone
      */
-    private function deductWalletBalance(int $walletId, float $amount): void
+    private function getTotalEwalletBalance(string $phone): float
     {
         $stmt = $this->pdo->prepare("
-            UPDATE wallets
-            SET balance = balance - ?,
-                updated_at = NOW()
-            WHERE wallet_id = ?
-            AND balance >= ?
+            SELECT SUM(amount) as total_balance
+            FROM ewallet_pins
+            WHERE recipient_phone = ?
+              AND is_redeemed = FALSE
+              AND expires_at > NOW()
+              AND (hold_status IS NULL OR hold_status != 'HELD')
         ");
-        $stmt->execute([$amount, $walletId, $amount]);
+        $stmt->execute([$phone]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($stmt->rowCount() === 0) {
-            throw new Exception("Insufficient wallet balance");
-        }
+        return (float)($result['total_balance'] ?? 0);
     }
 
     /**
      * Cashout Ewallet - Validates PIN and processes withdrawal with note denominations
+     * Uses the ewallet_pins table where each PIN represents a note/amount
      */
     public function cashoutEwallet(int $atmId, string $phone, string $pin, float $amount): array
     {
@@ -191,97 +204,129 @@ class ATMService
             $atm = $this->getAtmForUpdate($atmId);
             $this->ensureAtmHasCash($atm, $amount);
 
-            // 2. Get wallet balance
-            $wallet = $this->getWalletBalance($phone);
+            // 2. Get total available balance for this phone
+            $totalBalance = $this->getTotalEwalletBalance($phone);
             
-            // 3. Check if wallet has sufficient balance
-            if ((float)$wallet['balance'] < $amount) {
-                throw new Exception("Insufficient wallet balance. Available: P" . number_format($wallet['balance'], 2) . ", Requested: P" . number_format($amount, 2));
+            // 3. Check if user has sufficient balance
+            if ($totalBalance < $amount) {
+                throw new Exception("Insufficient e-wallet balance. Available: P" . number_format($totalBalance, 2) . ", Requested: P" . number_format($amount, 2));
             }
 
-            // 4. Validate Ewallet PIN (from the ewallet_pins table)
+            // 4. Validate the specific Ewallet PIN
             $stmt = $this->pdo->prepare("
                 SELECT *
                 FROM ewallet_pins
                 WHERE recipient_phone = ?
+                  AND pin = ?
                   AND is_redeemed = FALSE
                   AND expires_at > NOW()
+                  AND (hold_status IS NULL OR hold_status != 'HELD')
                 ORDER BY id DESC
                 LIMIT 1
                 FOR UPDATE
             ");
-            $stmt->execute([$phone]);
+            $stmt->execute([$phone, $pin]);
             $pinRecord = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$pinRecord) {
-                throw new Exception("No active PIN found for this phone");
+                throw new Exception("Invalid PIN or no active PIN found for this phone");
             }
 
-            // Verify PIN (plain text comparison as per your code)
-            if ((string)$pinRecord['pin'] !== (string)$pin) {
-                // Log failed attempt
-                $stmt = $this->pdo->prepare("
-                    UPDATE ewallet_pins
-                    SET attempts = attempts + 1,
-                        last_attempt_at = NOW()
-                    WHERE id = ?
-                ");
-                $stmt->execute([$pinRecord['id']]);
-                throw new Exception("Incorrect PIN");
+            // 5. Check if the PIN amount matches or is less than requested
+            $pinAmount = (float)$pinRecord['amount'];
+            if ($pinAmount < $amount) {
+                throw new Exception("PIN amount (P" . number_format($pinAmount, 2) . ") is less than requested amount (P" . number_format($amount, 2) . ")");
             }
 
-            // 5. Calculate note denominations
+            // 6. Calculate note denominations for the requested amount
             $notes = $this->calculateNotes($amount);
             $noteSummary = [];
             foreach ($notes as $denom => $count) {
                 $noteSummary[] = "{$count} x P{$denom}";
             }
 
-            // 6. Generate reference
+            // 7. Generate reference
             $reference = 'EWL-ATM-' . $pinRecord['id'] . '-' . time();
 
-            // 7. Mark PIN as redeemed
+            // 8. Mark PIN as redeemed
             $stmt = $this->pdo->prepare("
                 UPDATE ewallet_pins
                 SET is_redeemed = TRUE,
                     redeemed_at = NOW(),
                     redeemed_by = ?,
-                    redeemed_amount = ?,
-                    notes = ?,
-                    status = 'REDEEMED'
+                    hold_status = 'REDEEMED'
                 WHERE id = ?
             ");
             $stmt->execute([
                 'ATM-' . $atmId,
-                $amount,
-                json_encode(['notes' => $notes]),
                 $pinRecord['id']
             ]);
 
-            // 8. Deduct from wallet balance
-            $this->deductWalletBalance($wallet['wallet_id'], $amount);
+            // 9. If the PIN amount is greater than requested, we need to handle the change
+            // Option 1: Create a new PIN for the remaining balance (change)
+            if ($pinAmount > $amount) {
+                $changeAmount = $pinAmount - $amount;
+                $changePin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+                
+                $stmt = $this->pdo->prepare("
+                    INSERT INTO ewallet_pins (
+                        transaction_id,
+                        pin,
+                        is_redeemed,
+                        created_at,
+                        sender_phone,
+                        recipient_phone,
+                        expires_at,
+                        amount,
+                        generated_by,
+                        hold_status
+                    ) VALUES (
+                        ?,
+                        ?,
+                        FALSE,
+                        NOW(),
+                        ?,
+                        ?,
+                        DATE_ADD(NOW(), INTERVAL 24 HOUR),
+                        ?,
+                        'ATM-CHANGE',
+                        'ACTIVE'
+                    )
+                ");
+                $stmt->execute([
+                    $pinRecord['transaction_id'],
+                    $changePin,
+                    $pinRecord['sender_phone'],
+                    $phone,
+                    $changeAmount
+                ]);
+                
+                $changeNote = "Change of P" . number_format($changeAmount, 2) . " returned as new PIN: {$changePin}";
+            } else {
+                $changeNote = null;
+            }
 
-            // 9. Reduce ATM cash
+            // 10. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            // 10. Record ATM transaction with note details
+            // 11. Record ATM transaction with note details
             $this->insertAtmTransaction(
                 $atmId, 
-                $wallet['user_id'], 
+                null, // No user_id in ewallet_pins
                 $reference, 
                 $amount, 
                 'SUCCESS',
                 [
                     'notes' => $notes,
                     'note_summary' => implode(', ', $noteSummary),
-                    'wallet_id' => $wallet['wallet_id'],
-                    'phone' => $phone
+                    'pin_id' => $pinRecord['id'],
+                    'phone' => $phone,
+                    'original_pin_amount' => $pinAmount,
+                    'change' => $changeNote
                 ]
             );
 
-            // 11. Post ledger entries
-            // DR: Wallet Liability (decrease liability) 
-            // CR: ATM Cash Asset (decrease asset)
+            // 12. Post ledger entries
             $this->postLedgerEntry(
                 $reference,
                 'WALLET-LIABILITY',
@@ -289,25 +334,36 @@ class ATMService
                 $amount,
                 'ATM_CASHOUT',
                 "Ewallet cashout - " . implode(', ', $noteSummary),
-                "Phone: {$phone}, Wallet: {$wallet['wallet_id']}"
+                "Phone: {$phone}, PIN ID: {$pinRecord['id']}"
             );
 
-            // 12. Update ledger balances
-            $this->updateLedgerAccountBalance('WALLET-LIABILITY', -$amount); // Decrease liability
-            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);    // Decrease ATM cash
+            // 13. Update ledger balances
+            $this->updateLedgerAccountBalance('WALLET-LIABILITY', -$amount);
+            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);
 
             $this->pdo->commit();
 
-            return [
+            // Get remaining balance
+            $remainingBalance = $this->getTotalEwalletBalance($phone);
+
+            $response = [
                 "status" => "APPROVED",
                 "message" => "Cash dispensed successfully",
                 "reference" => $reference,
                 "amount" => $amount,
                 "notes" => $notes,
                 "note_summary" => implode(', ', $noteSummary),
-                "wallet_balance" => (float)$wallet['balance'] - $amount,
+                "remaining_balance" => $remainingBalance,
                 "phone" => $phone
             ];
+
+            if ($changeNote) {
+                $response['change_pin'] = $changePin ?? null;
+                $response['change_amount'] = $changeAmount ?? null;
+                $response['change_message'] = $changeNote;
+            }
+
+            return $response;
 
         } catch (Exception $e) {
             if ($this->pdo->inTransaction()) {
@@ -322,18 +378,32 @@ class ATMService
     }
 
     /**
-     * Get wallet balance for display
+     * Get wallet balance for display - shows total across all pins
      */
     public function getBalance(string $phone): array
     {
         try {
-            $wallet = $this->getWalletBalance($phone);
+            $totalBalance = $this->getTotalEwalletBalance($phone);
+            
+            // Get individual pin details
+            $stmt = $this->pdo->prepare("
+                SELECT id, amount, pin, expires_at, sender_phone
+                FROM ewallet_pins
+                WHERE recipient_phone = ?
+                  AND is_redeemed = FALSE
+                  AND expires_at > NOW()
+                  AND (hold_status IS NULL OR hold_status != 'HELD')
+                ORDER BY expires_at ASC
+            ");
+            $stmt->execute([$phone]);
+            $pins = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             return [
                 "status" => "SUCCESS",
-                "balance" => (float)$wallet['balance'],
-                "phone" => $wallet['phone'],
-                "wallet_id" => $wallet['wallet_id']
+                "total_balance" => $totalBalance,
+                "phone" => $phone,
+                "pin_count" => count($pins),
+                "pins" => $pins
             ];
         } catch (Exception $e) {
             return [
@@ -352,6 +422,98 @@ class ATMService
             "status" => "SUCCESS",
             "denominations" => $this->denominations
         ];
+    }
+
+    /**
+     * Redeem a PIN partially (for partial cashout)
+     */
+    public function redeemPartialPin(int $pinId, float $amount, int $atmId): array
+    {
+        try {
+            $this->pdo->beginTransaction();
+
+            $stmt = $this->pdo->prepare("
+                SELECT * FROM ewallet_pins
+                WHERE id = ?
+                AND is_redeemed = FALSE
+                AND expires_at > NOW()
+                FOR UPDATE
+            ");
+            $stmt->execute([$pinId]);
+            $pin = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pin) {
+                throw new Exception("PIN not found or already redeemed");
+            }
+
+            $pinAmount = (float)$pin['amount'];
+            if ($amount > $pinAmount) {
+                throw new Exception("Requested amount exceeds PIN value");
+            }
+
+            if ($amount == $pinAmount) {
+                // Full redemption
+                return $this->cashoutEwallet($atmId, $pin['recipient_phone'], $pin['pin'], $amount);
+            }
+
+            // Partial redemption - create new PIN for remaining balance
+            $remaining = $pinAmount - $amount;
+            $newPin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+
+            // Mark original as redeemed
+            $stmt = $this->pdo->prepare("
+                UPDATE ewallet_pins
+                SET is_redeemed = TRUE,
+                    redeemed_at = NOW(),
+                    redeemed_by = ?,
+                    hold_status = 'PARTIAL_REDEEMED'
+                WHERE id = ?
+            ");
+            $stmt->execute(['ATM-' . $atmId, $pinId]);
+
+            // Create new PIN for remaining balance
+            $stmt = $this->pdo->prepare("
+                INSERT INTO ewallet_pins (
+                    transaction_id,
+                    pin,
+                    is_redeemed,
+                    created_at,
+                    sender_phone,
+                    recipient_phone,
+                    expires_at,
+                    amount,
+                    generated_by,
+                    hold_status
+                ) VALUES (?, ?, FALSE, NOW(), ?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), ?, 'PARTIAL_REDEEM', 'ACTIVE')
+            ");
+            $stmt->execute([
+                $pin['transaction_id'],
+                $newPin,
+                $pin['sender_phone'],
+                $pin['recipient_phone'],
+                $remaining
+            ]);
+
+            $this->pdo->commit();
+
+            return [
+                "status" => "SUCCESS",
+                "message" => "Partial redemption completed",
+                "redeemed_amount" => $amount,
+                "remaining_amount" => $remaining,
+                "new_pin" => $newPin,
+                "new_pin_id" => $this->pdo->lastInsertId()
+            ];
+
+        } catch (Exception $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            return [
+                "status" => "ERROR",
+                "message" => $e->getMessage()
+            ];
+        }
     }
 
     // ============================================================
