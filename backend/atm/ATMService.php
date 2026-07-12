@@ -1,27 +1,34 @@
 <?php
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/../network/ISO8583Gateway.php';
 
 class ATMService
 {
     private PDO $pdo;
+    private ISO8583Gateway $isoGateway;
     
     // ATM denominations/notes available
     private array $denominations = [200, 100, 50, 20, 10];
     
-    // Ledger account mappings - MATCHING YOUR ACTUAL ACCOUNTS
+    // Ledger account mappings
     private array $ledgerAccounts = [
-        'wallet_liability' => 'WALLET-CONTROL',        // Customer Wallet Liabilities
-        'atm_cash' => 'ATM-001',                       // ATM Cash Float
-        'interbank_rec' => 'ASSET-INTERBANK-REC',      // Interbank Settlement Receivable
-        'atm_fee_income' => 'INC-ATM-FEE',             // ATM Withdrawal Fee Income
-        'settlement' => 'ASSET-MAIN-SETTLEMENT'        // Main Settlement Account
+        'wallet_liability' => 'WALLET-CONTROL',
+        'atm_cash' => 'ATM-001',
+        'interbank_rec' => 'ASSET-INTERBANK-REC',
+        'atm_fee_income' => 'INC-ATM-FEE',
+        'settlement' => 'ASSET-MAIN-SETTLEMENT'
     ];
 
     public function __construct()
     {
         global $pdo;
         $this->pdo = $pdo;
+        $this->isoGateway = new ISO8583Gateway($pdo);
     }
+
+    // ============================================================
+    // PRIVATE METHODS
+    // ============================================================
 
     private function getAtmForUpdate(int $atmId): array
     {
@@ -121,9 +128,6 @@ class ATMService
         }
     }
 
-    /**
-     * Calculate the optimal note combination for a given amount
-     */
     private function calculateNotes(float $amount): array
     {
         $remaining = (int)$amount;
@@ -144,9 +148,6 @@ class ATMService
         return $notes;
     }
 
-    /**
-     * Get wallet balance for a user from wallets table
-     */
     private function getWalletBalance(string $phone): array
     {
         $stmt = $this->pdo->prepare("
@@ -167,9 +168,6 @@ class ATMService
         return $result;
     }
 
-    /**
-     * Deduct from wallet balance
-     */
     private function deductWalletBalance(int $walletId, float $amount): void
     {
         $stmt = $this->pdo->prepare("
@@ -186,9 +184,6 @@ class ATMService
         }
     }
 
-    /**
-     * Validate a PIN from ewallet_pins table
-     */
     private function validatePin(string $pin, string $phone): array
     {
         $stmt = $this->pdo->prepare("
@@ -210,9 +205,6 @@ class ATMService
         return $result;
     }
 
-    /**
-     * Mark a PIN as redeemed in ewallet_pins table
-     */
     private function markPinAsRedeemed(int $pinId, string $redeemedBy): void
     {
         $stmt = $this->pdo->prepare("
@@ -229,25 +221,81 @@ class ATMService
         $stmt->execute([$redeemedBy, $pinId]);
     }
 
+    // ============================================================
+    // ISO 8583 MESSAGE HANDLING FOR SAT CASOUTS
+    // ============================================================
+
     /**
-     * Cashout Ewallet - Validates PIN, checks wallet balance, dispenses cash
+     * Send ISO 8583 dispense advice to VouchMorph
+     * This is the standard way banks communicate
+     */
+    private function sendDispenseAdvice(array $data): void
+    {
+        try {
+            // Build ISO 8583 message
+            $isoMessage = [
+                'message_type' => '0220', // Financial Transaction Advice
+                'sat_number' => $data['sat_number'],
+                'amount' => $data['amount'],
+                'trace_number' => $data['trace_number'],
+                'auth_code' => $data['auth_code'] ?? null,
+                'atm_id' => $data['atm_id'],
+                'acquirer_institution' => $data['acquirer'] ?? 'SACCUSSALIS',
+                'issuer_institution' => $data['issuer'] ?? 'SACCUSSALIS',
+                'status' => 'DISPENSED',
+                'timestamp' => date('Y-m-d H:i:s'),
+                'reference' => $data['reference']
+            ];
+            
+            // Send through ISO 8583 gateway
+            $response = $this->isoGateway->sendDispenseAdvice($isoMessage);
+            
+            // Log the notification
+            $stmt = $this->pdo->prepare("
+                INSERT INTO vouchmorph_notifications (
+                    transaction_reference,
+                    sat_number,
+                    amount,
+                    status,
+                    response,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, NOW())
+            ");
+            $stmt->execute([
+                $data['reference'],
+                $data['sat_number'],
+                $data['amount'],
+                $response['success'] ? 'SUCCESS' : 'FAILED',
+                json_encode($response)
+            ]);
+            
+            error_log("ISO8583: Dispense advice sent for SAT: {$data['sat_number']}, Success: " . ($response['success'] ? 'YES' : 'NO'));
+            
+        } catch (Exception $e) {
+            error_log("ISO8583: Error sending dispense advice: " . $e->getMessage());
+            // Don't throw - we don't want to fail the transaction
+        }
+    }
+
+    // ============================================================
+    // EWALLET CASOUT (INTERNAL - NO EXTERNAL NOTIFICATION)
+    // ============================================================
+
+    /**
+     * Cashout Ewallet - Internal transaction
+     * NO VOUCHMORPH NOTIFICATION
      */
     public function cashoutEwallet(int $atmId, string $phone, string $pin, float $amount): array
     {
         try {
             $this->pdo->beginTransaction();
 
-            // 1. Get and validate ATM
             $atm = $this->getAtmForUpdate($atmId);
             $this->ensureAtmHasCash($atm, $amount);
 
-            // 2. Validate the PIN
             $pinRecord = $this->validatePin($pin, $phone);
-            
-            // 3. Get wallet balance
             $wallet = $this->getWalletBalance($phone);
             
-            // 4. Check if wallet has sufficient balance
             $availableBalance = (float)$wallet['balance'] - (float)($wallet['held_balance'] ?? 0);
             if ($availableBalance < $amount) {
                 throw new Exception(
@@ -256,26 +304,18 @@ class ATMService
                 );
             }
 
-            // 5. Calculate note denominations
             $notes = $this->calculateNotes($amount);
             $noteSummary = [];
             foreach ($notes as $denom => $count) {
                 $noteSummary[] = "{$count} x P{$denom}";
             }
 
-            // 6. Generate reference
             $reference = 'EWL-ATM-' . $pinRecord['id'] . '-' . time();
 
-            // 7. Mark PIN as redeemed
             $this->markPinAsRedeemed($pinRecord['id'], 'ATM-' . $atmId);
-
-            // 8. Deduct from wallet balance
             $this->deductWalletBalance($wallet['wallet_id'], $amount);
-
-            // 9. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            // 10. Record ATM transaction
             $this->insertAtmTransaction(
                 $atmId, 
                 $wallet['user_id'], 
@@ -284,26 +324,21 @@ class ATMService
                 'SUCCESS'
             );
 
-            // 11. Post ledger entries using CORRECT account mappings
-            // DR: Wallet Liability (decrease liability) - Debit WALLET-CONTROL
-            // CR: ATM Cash Asset (decrease asset) - Credit ATM-001
             $this->postLedgerEntry(
                 $reference,
-                $this->ledgerAccounts['wallet_liability'],  // WALLET-CONTROL
-                $this->ledgerAccounts['atm_cash'],          // ATM-001
+                $this->ledgerAccounts['wallet_liability'],
+                $this->ledgerAccounts['atm_cash'],
                 $amount,
                 'ATM_CASHOUT',
                 "Ewallet cashout - " . implode(', ', $noteSummary),
                 "Phone: {$phone}, PIN ID: {$pinRecord['id']}, Wallet: {$wallet['wallet_id']}"
             );
 
-            // Update ledger balances
             $this->updateLedgerAccountBalance($this->ledgerAccounts['wallet_liability'], -$amount);
             $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
 
             $this->pdo->commit();
 
-            // Get updated balance
             $newBalance = (float)$wallet['balance'] - $amount;
 
             return [
@@ -318,7 +353,9 @@ class ATMService
                 "pin_redeemed" => true,
                 "pin_id" => $pinRecord['id'],
                 "atm_id" => $atmId,
-                "user_id" => $wallet['user_id']
+                "user_id" => $wallet['user_id'],
+                "transaction_type" => "EWALLET",
+                "vouchmorph_notified" => false // No external notification
             ];
 
         } catch (Exception $e) {
@@ -333,9 +370,285 @@ class ATMService
         }
     }
 
+    // ============================================================
+    // SAT METHODS (EXTERNAL - WITH VOUCHMORPH NOTIFICATION)
+    // ============================================================
+
     /**
-     * Get wallet balance for display
+     * Authorize SAT - Like Visa authorization request
      */
+    public function authorizeSAT(int $atmId, string $satNumber, string $pin, float $amount): array
+    {
+        try {
+            $this->pdo->beginTransaction();
+
+            $atm = $this->getAtmForUpdate($atmId);
+            $this->ensureAtmHasCash($atm, $amount);
+
+            $stmt = $this->pdo->prepare("
+                SELECT *
+                FROM sat_tokens
+                WHERE sat_number = ?
+                  AND status = 'ACTIVE'
+                  AND expires_at > NOW()
+                  AND processing = FALSE
+                FOR UPDATE
+            ");
+            $stmt->execute([$satNumber]);
+            $sat = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$sat) {
+                throw new Exception("Invalid or expired SAT");
+            }
+
+            if ((string)$sat['pin'] !== (string)$pin) {
+                throw new Exception("Invalid PIN");
+            }
+
+            if ((float)$sat['amount'] !== (float)$amount) {
+                throw new Exception("Amount mismatch");
+            }
+
+            $trace = 'SAT-AUTH-' . $sat['sat_id'] . '-' . time();
+
+            $stmt = $this->pdo->prepare("
+                UPDATE sat_tokens
+                SET processing = TRUE,
+                    last_attempt_at = NOW(),
+                    attempts = attempts + 1
+                WHERE sat_id = ?
+            ");
+            $stmt->execute([$sat['sat_id']]);
+
+            $stmt = $this->pdo->prepare("
+                INSERT INTO atm_authorizations (
+                    sat_code,
+                    trace_number,
+                    acquirer_bank,
+                    amount,
+                    response_code,
+                    auth_code,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ");
+            $stmt->execute([
+                $satNumber,
+                $trace,
+                'SACCUSSALIS',
+                $amount,
+                '00',
+                substr(hash('sha256', $trace), 0, 12)
+            ]);
+
+            $this->pdo->commit();
+
+            return [
+                "status" => "APPROVED",
+                "trace_number" => $trace,
+                "sat_id" => $sat['sat_id'],
+                "amount" => $amount,
+                "auth_code" => substr(hash('sha256', $trace), 0, 12)
+            ];
+        } catch (Exception $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            return [
+                "status" => "DECLINED",
+                "message" => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Complete SAT Cashout - Dispenses cash and sends ISO 8583 message
+     * This is where VouchMorph gets notified via standard ISO 8583
+     */
+    public function completeSAT(int $atmId, string $satNumber, string $traceNumber): array
+    {
+        try {
+            $this->pdo->beginTransaction();
+
+            $atm = $this->getAtmForUpdate($atmId);
+
+            $stmt = $this->pdo->prepare("
+                SELECT s.*, a.auth_code
+                FROM sat_tokens s
+                JOIN atm_authorizations a ON s.sat_number = a.sat_code
+                WHERE s.sat_number = ?
+                  AND s.status = 'ACTIVE'
+                  AND s.processing = TRUE
+                  AND a.trace_number = ?
+                FOR UPDATE
+            ");
+            $stmt->execute([$satNumber, $traceNumber]);
+            $sat = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$sat) {
+                throw new Exception("SAT not available for completion");
+            }
+
+            $amount = (float)$sat['amount'];
+            $authCode = $sat['auth_code'] ?? 'AUTH' . strtoupper(substr(uniqid(), -6));
+            
+            $this->ensureAtmHasCash($atm, $amount);
+
+            $notes = $this->calculateNotes($amount);
+            $noteSummary = [];
+            foreach ($notes as $denom => $count) {
+                $noteSummary[] = "{$count} x P{$denom}";
+            }
+
+            $dispenseTrace = 'DSP-' . $traceNumber;
+            $reference = 'SAT-CASHOUT-' . $sat['sat_id'] . '-' . time();
+
+            // Mark SAT as used
+            $stmt = $this->pdo->prepare("
+                UPDATE sat_tokens
+                SET status = 'USED',
+                    processing = FALSE,
+                    used_at = NOW(),
+                    auth_code = ?
+                WHERE sat_id = ?
+            ");
+            $stmt->execute([$authCode, $sat['sat_id']]);
+
+            // Update authorization
+            $stmt = $this->pdo->prepare("
+                UPDATE atm_authorizations
+                SET dispense_trace = ?,
+                    auth_code = ?,
+                    response_code = '00'
+                WHERE trace_number = ?
+            ");
+            $stmt->execute([$dispenseTrace, $authCode, $traceNumber]);
+
+            // Reduce ATM cash
+            $this->reduceAtmCash($atmId, $amount);
+
+            // Record transaction
+            $this->insertAtmTransaction(
+                $atmId, 
+                null, 
+                $reference, 
+                $amount, 
+                'SUCCESS'
+            );
+
+            // Post ledger entries (interbank settlement)
+            $this->postLedgerEntry(
+                $reference,
+                $this->ledgerAccounts['interbank_rec'],
+                $this->ledgerAccounts['atm_cash'],
+                $amount,
+                'SAT_CASHOUT',
+                'SAT cashout completed - ' . implode(', ', $noteSummary),
+                'ATM dispensed cash for SAT: ' . $satNumber
+            );
+
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['interbank_rec'], $amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
+
+            // Create interbank claim
+            $stmt = $this->pdo->prepare("
+                INSERT INTO interbank_claims (
+                    sat_code,
+                    issuer_institution,
+                    amount,
+                    fee,
+                    net_amount,
+                    status,
+                    trace_number,
+                    auth_code,
+                    created_at
+                ) VALUES (?, ?, ?, 0, ?, 'PENDING', ?, ?, NOW())
+            ");
+            $stmt->execute([
+                $satNumber,
+                $sat['issuer_bank'] ?? 'UNKNOWN',
+                $amount,
+                $amount,
+                $traceNumber,
+                $authCode
+            ]);
+
+            $this->pdo->commit();
+
+            // ============================================================
+            // SEND ISO 8583 DISPENSE ADVICE TO VOUCHMORPH
+            // This is the standard way to notify external systems
+            // ============================================================
+            
+            $dispenseData = [
+                'sat_number' => $satNumber,
+                'amount' => $amount,
+                'trace_number' => $traceNumber,
+                'auth_code' => $authCode,
+                'atm_id' => $atmId,
+                'reference' => $reference,
+                'acquirer' => 'SACCUSSALIS',
+                'issuer' => $sat['issuer_bank'] ?? 'UNKNOWN'
+            ];
+            
+            // Send ISO 8583 dispense advice (non-blocking)
+            $this->sendDispenseAdviceAsync($dispenseData);
+
+            return [
+                "status" => "COMPLETED",
+                "reference" => $reference,
+                "dispense_trace" => $dispenseTrace,
+                "amount" => $amount,
+                "notes" => $notes,
+                "note_summary" => implode(', ', $noteSummary),
+                "auth_code" => $authCode,
+                "transaction_type" => "SAT",
+                "vouchmorph_notified" => true
+            ];
+            
+        } catch (Exception $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            return [
+                "status" => "DECLINED",
+                "message" => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Async send dispense advice (non-blocking)
+     */
+    private function sendDispenseAdviceAsync(array $data): void
+    {
+        // Check if VouchMorph is enabled
+        if (!getenv('VOUCHMORPH_ENABLED') && !defined('VOUCHMORPH_ENABLED')) {
+            error_log("VOUCHMORPH: Notifications disabled");
+            return;
+        }
+        
+        // Try background process
+        if (function_exists('exec')) {
+            $jsonData = json_encode($data);
+            $cmd = sprintf(
+                'php %s/../scripts/send_dispense_advice.php "%s" > /dev/null 2>&1 &',
+                __DIR__,
+                addslashes($jsonData)
+            );
+            exec($cmd);
+            error_log("ISO8583: Dispense advice queued for SAT: {$data['sat_number']}");
+        } else {
+            // Fallback: synchronous
+            $this->sendDispenseAdvice($data);
+        }
+    }
+
+    // ============================================================
+    // OTHER METHODS
+    // ============================================================
+
     public function getBalance(string $phone): array
     {
         try {
@@ -360,9 +673,6 @@ class ATMService
         }
     }
 
-    /**
-     * Get available ATM denominations
-     */
     public function getDenominations(): array
     {
         return [
@@ -371,9 +681,6 @@ class ATMService
         ];
     }
 
-    /**
-     * Place a hold on PIN and wallet
-     */
     public function placeHold(string $pin, string $phone, float $amount, int $atmId): array
     {
         try {
@@ -389,7 +696,6 @@ class ATMService
 
             $holdReference = 'HOLD-' . time() . '-' . rand(1000, 9999);
 
-            // Update PIN hold status
             $stmt = $this->pdo->prepare("
                 UPDATE ewallet_pins 
                 SET hold_status = true, 
@@ -404,7 +710,6 @@ class ATMService
                 $pinRecord['id']
             ]);
 
-            // Update wallet held_balance
             $stmt = $this->pdo->prepare("
                 UPDATE wallets 
                 SET held_balance = COALESCE(held_balance, 0) + ? 
@@ -412,7 +717,6 @@ class ATMService
             ");
             $stmt->execute([$amount, $wallet['wallet_id']]);
 
-            // Insert into financial_holds
             $stmt = $this->pdo->prepare("
                 INSERT INTO financial_holds 
                     (wallet_id, amount, hold_reference, foreign_bank, session_id, status, 
@@ -454,9 +758,6 @@ class ATMService
         }
     }
 
-    /**
-     * Release a hold
-     */
     public function releaseHold(string $holdReference): array
     {
         try {
@@ -528,9 +829,6 @@ class ATMService
         }
     }
 
-    /**
-     * Complete cashout with hold
-     */
     public function completeCashoutWithHold(int $atmId, string $holdReference): array
     {
         try {
@@ -611,11 +909,10 @@ class ATMService
                 'SUCCESS'
             );
 
-            // Post ledger entries with CORRECT account mappings
             $this->postLedgerEntry(
                 $reference,
-                $this->ledgerAccounts['wallet_liability'],  // WALLET-CONTROL
-                $this->ledgerAccounts['atm_cash'],          // ATM-001
+                $this->ledgerAccounts['wallet_liability'],
+                $this->ledgerAccounts['atm_cash'],
                 $amount,
                 'ATM_CASHOUT_HOLD',
                 "Ewallet cashout with hold - " . implode(', ', $noteSummary),
@@ -641,7 +938,9 @@ class ATMService
                 "phone" => $pinRecord['phone'],
                 "pin_redeemed" => true,
                 "atm_id" => $atmId,
-                "user_id" => $pinRecord['user_id']
+                "user_id" => $pinRecord['user_id'],
+                "transaction_type" => "EWALLET_HOLD",
+                "vouchmorph_notified" => false
             ];
 
         } catch (Exception $e) {
@@ -656,9 +955,6 @@ class ATMService
         }
     }
 
-    /**
-     * Get transaction history for an ATM
-     */
     public function getAtmTransactions(int $atmId, int $limit = 50): array
     {
         try {
@@ -680,208 +976,6 @@ class ATMService
         } catch (Exception $e) {
             return [
                 "status" => "ERROR",
-                "message" => $e->getMessage()
-            ];
-        }
-    }
-
-    // ============================================================
-    // SAT Methods
-    // ============================================================
-
-    public function authorizeSAT(int $atmId, string $satNumber, string $pin, float $amount): array
-    {
-        try {
-            $this->pdo->beginTransaction();
-
-            $atm = $this->getAtmForUpdate($atmId);
-            $this->ensureAtmHasCash($atm, $amount);
-
-            $stmt = $this->pdo->prepare("
-                SELECT *
-                FROM sat_tokens
-                WHERE sat_number = ?
-                  AND status = 'ACTIVE'
-                  AND expires_at > NOW()
-                  AND processing = FALSE
-                FOR UPDATE
-            ");
-            $stmt->execute([$satNumber]);
-            $sat = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$sat) {
-                throw new Exception("Invalid or expired SAT");
-            }
-
-            if ((string)$sat['pin'] !== (string)$pin) {
-                throw new Exception("Invalid PIN");
-            }
-
-            if ((float)$sat['amount'] !== (float)$amount) {
-                throw new Exception("Amount mismatch");
-            }
-
-            $trace = 'SAT-AUTH-' . $sat['sat_id'] . '-' . time();
-
-            $stmt = $this->pdo->prepare("
-                UPDATE sat_tokens
-                SET processing = TRUE,
-                    last_attempt_at = NOW(),
-                    attempts = attempts + 1
-                WHERE sat_id = ?
-            ");
-            $stmt->execute([$sat['sat_id']]);
-
-            $stmt = $this->pdo->prepare("
-                INSERT INTO atm_authorizations (
-                    sat_code,
-                    trace_number,
-                    acquirer_bank,
-                    amount,
-                    response_code,
-                    auth_code,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-            ");
-            $stmt->execute([
-                $satNumber,
-                $trace,
-                'SACCUSSALIS',
-                $amount,
-                '00',
-                substr(hash('sha256', $trace), 0, 12)
-            ]);
-
-            $this->pdo->commit();
-
-            return [
-                "status" => "APPROVED",
-                "trace_number" => $trace,
-                "sat_id" => $sat['sat_id'],
-                "amount" => $amount
-            ];
-        } catch (Exception $e) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-
-            return [
-                "status" => "DECLINED",
-                "message" => $e->getMessage()
-            ];
-        }
-    }
-
-    public function completeSAT(int $atmId, string $satNumber, string $traceNumber): array
-    {
-        try {
-            $this->pdo->beginTransaction();
-
-            $atm = $this->getAtmForUpdate($atmId);
-
-            $stmt = $this->pdo->prepare("
-                SELECT *
-                FROM sat_tokens
-                WHERE sat_number = ?
-                  AND status = 'ACTIVE'
-                  AND processing = TRUE
-                FOR UPDATE
-            ");
-            $stmt->execute([$satNumber]);
-            $sat = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$sat) {
-                throw new Exception("SAT not available for completion");
-            }
-
-            $amount = (float)$sat['amount'];
-            $this->ensureAtmHasCash($atm, $amount);
-
-            $notes = $this->calculateNotes($amount);
-            $noteSummary = [];
-            foreach ($notes as $denom => $count) {
-                $noteSummary[] = "{$count} x P{$denom}";
-            }
-
-            $dispenseTrace = 'DSP-' . $traceNumber;
-
-            $stmt = $this->pdo->prepare("
-                UPDATE sat_tokens
-                SET status = 'USED',
-                    processing = FALSE,
-                    used_at = NOW()
-                WHERE sat_id = ?
-            ");
-            $stmt->execute([$sat['sat_id']]);
-
-            $stmt = $this->pdo->prepare("
-                UPDATE atm_authorizations
-                SET dispense_trace = ?
-                WHERE trace_number = ?
-            ");
-            $stmt->execute([$dispenseTrace, $traceNumber]);
-
-            $this->reduceAtmCash($atmId, $amount);
-
-            $reference = 'SAT-CASHOUT-' . $sat['sat_id'] . '-' . time();
-
-            $this->insertAtmTransaction(
-                $atmId, 
-                null, 
-                $reference, 
-                $amount, 
-                'SUCCESS'
-            );
-
-            // SAT uses interbank settlement
-            $this->postLedgerEntry(
-                $reference,
-                $this->ledgerAccounts['interbank_rec'],    // ASSET-INTERBANK-REC
-                $this->ledgerAccounts['atm_cash'],          // ATM-001
-                $amount,
-                'SAT_CASHOUT',
-                'SAT cashout completed - ' . implode(', ', $noteSummary),
-                'ATM dispensed cash for SAT: ' . $satNumber
-            );
-
-            $this->updateLedgerAccountBalance($this->ledgerAccounts['interbank_rec'], $amount);
-            $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
-
-            $stmt = $this->pdo->prepare("
-                INSERT INTO interbank_claims (
-                    sat_code,
-                    issuer_institution,
-                    amount,
-                    fee,
-                    net_amount,
-                    status,
-                    created_at
-                ) VALUES (?, ?, ?, 0, ?, 'PENDING', NOW())
-            ");
-            $stmt->execute([
-                $satNumber,
-                $sat['issuer_bank'] ?? 'UNKNOWN',
-                $amount,
-                $amount
-            ]);
-
-            $this->pdo->commit();
-
-            return [
-                "status" => "COMPLETED",
-                "reference" => $reference,
-                "dispense_trace" => $dispenseTrace,
-                "amount" => $amount,
-                "notes" => $notes,
-                "note_summary" => implode(', ', $noteSummary)
-            ];
-        } catch (Exception $e) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-
-            return [
-                "status" => "DECLINED",
                 "message" => $e->getMessage()
             ];
         }
