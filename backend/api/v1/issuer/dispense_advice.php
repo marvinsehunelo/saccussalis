@@ -130,3 +130,14 @@ respond("ok","Withdrawal settled");
 
     respond("error",$e->getMessage());
 }
+// Send dispense command to ATM hardware
+function dispenseHardware($atmId, $amount, $traceNumber) {
+    // Example: Call ATM manufacturer's SDK
+    $atmHardware = new ATMHWInterface();
+    return $atmHardware->dispenseCash([
+        'atm_id' => $atmId,
+        'amount' => $amount,
+        'trace' => $traceNumber,
+        'denominations' => $this->calculateDenominations($amount)
+    ]);
+}
