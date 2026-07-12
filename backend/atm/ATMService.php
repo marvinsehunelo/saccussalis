@@ -49,20 +49,23 @@ class ATMService
         $stmt->execute([$amount, $atmId]);
     }
 
-    private function insertAtmTransaction(int $atmId, ?int $userId, string $reference, float $amount, string $status, ?array $notes = null): void
+    /**
+     * Insert ATM transaction - Matches your exact table schema
+     * Table: atm_transactions (id, atm_id, user_id, transaction_reference, amount, status, created_at)
+     */
+    private function insertAtmTransaction(int $atmId, ?int $userId, string $reference, float $amount, string $status): void
     {
         $stmt = $this->pdo->prepare("
             INSERT INTO atm_transactions (
-                atm_id, user_id, transaction_reference, amount, status, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+                atm_id, user_id, transaction_reference, amount, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, NOW())
         ");
         $stmt->execute([
             $atmId, 
             $userId, 
             $reference, 
             $amount, 
-            $status,
-            $notes ? json_encode($notes) : null
+            $status
         ]);
     }
 
@@ -273,22 +276,13 @@ class ATMService
             // 9. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            // 10. Record ATM transaction
+            // 10. Record ATM transaction (matches your table schema)
             $this->insertAtmTransaction(
                 $atmId, 
                 $wallet['user_id'], 
                 $reference, 
                 $amount, 
-                'SUCCESS',
-                [
-                    'notes' => $notes,
-                    'note_summary' => implode(', ', $noteSummary),
-                    'pin_id' => $pinRecord['id'],
-                    'phone' => $phone,
-                    'wallet_id' => $wallet['wallet_id'],
-                    'wallet_balance_before' => $wallet['balance'],
-                    'wallet_balance_after' => (float)$wallet['balance'] - $amount
-                ]
+                'SUCCESS'
             );
 
             // 11. Post ledger entries
@@ -320,7 +314,9 @@ class ATMService
                 "wallet_balance" => $newBalance,
                 "phone" => $phone,
                 "pin_redeemed" => true,
-                "pin_id" => $pinRecord['id']
+                "pin_id" => $pinRecord['id'],
+                "atm_id" => $atmId,
+                "user_id" => $wallet['user_id']
             ];
 
         } catch (Exception $e) {
@@ -352,6 +348,7 @@ class ATMService
                 "available_balance" => $availableBalance,
                 "phone" => $wallet['phone'],
                 "wallet_id" => $wallet['wallet_id'],
+                "user_id" => $wallet['user_id'],
                 "status" => $wallet['status']
             ];
         } catch (Exception $e) {
@@ -626,21 +623,13 @@ class ATMService
             // 9. Generate reference
             $reference = 'EWL-ATM-HOLD-' . $pinRecord['id'] . '-' . time();
 
-            // 10. Record ATM transaction
+            // 10. Record ATM transaction (matches your table schema)
             $this->insertAtmTransaction(
                 $atmId, 
                 $pinRecord['user_id'], 
                 $reference, 
                 $amount, 
-                'SUCCESS',
-                [
-                    'notes' => $notes,
-                    'note_summary' => implode(', ', $noteSummary),
-                    'pin_id' => $pinRecord['id'],
-                    'phone' => $pinRecord['phone'],
-                    'wallet_id' => $pinRecord['wallet_id'],
-                    'hold_reference' => $holdReference
-                ]
+                'SUCCESS'
             );
 
             // 11. Post ledger entries
@@ -672,7 +661,9 @@ class ATMService
                 "note_summary" => implode(', ', $noteSummary),
                 "wallet_balance" => $newBalance,
                 "phone" => $pinRecord['phone'],
-                "pin_redeemed" => true
+                "pin_redeemed" => true,
+                "atm_id" => $atmId,
+                "user_id" => $pinRecord['user_id']
             ];
 
         } catch (Exception $e) {
@@ -687,8 +678,37 @@ class ATMService
         }
     }
 
+    /**
+     * Get transaction history for an ATM
+     */
+    public function getAtmTransactions(int $atmId, int $limit = 50): array
+    {
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT * FROM atm_transactions
+                WHERE atm_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            ");
+            $stmt->execute([$atmId, $limit]);
+            $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return [
+                "status" => "SUCCESS",
+                "atm_id" => $atmId,
+                "transaction_count" => count($transactions),
+                "transactions" => $transactions
+            ];
+        } catch (Exception $e) {
+            return [
+                "status" => "ERROR",
+                "message" => $e->getMessage()
+            ];
+        }
+    }
+
     // ============================================================
-    // SAT Methods (unchanged)
+    // SAT Methods
     // ============================================================
 
     public function authorizeSAT(int $atmId, string $satNumber, string $pin, float $amount): array
@@ -811,44 +831,32 @@ class ATMService
                 UPDATE sat_tokens
                 SET status = 'USED',
                     processing = FALSE,
-                    used_at = NOW(),
-                    notes = ?
+                    used_at = NOW()
                 WHERE sat_id = ?
             ");
-            $stmt->execute([
-                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)]),
-                $sat['sat_id']
-            ]);
+            $stmt->execute([$sat['sat_id']]);
 
             $stmt = $this->pdo->prepare("
                 UPDATE atm_authorizations
-                SET dispense_trace = ?,
-                    notes = ?
+                SET dispense_trace = ?
                 WHERE trace_number = ?
             ");
-            $stmt->execute([
-                $dispenseTrace,
-                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)]),
-                $traceNumber
-            ]);
+            $stmt->execute([$dispenseTrace, $traceNumber]);
 
             $this->reduceAtmCash($atmId, $amount);
 
             $reference = 'SAT-CASHOUT-' . $sat['sat_id'] . '-' . time();
 
+            // Record ATM transaction (matches your table schema)
             $this->insertAtmTransaction(
                 $atmId, 
                 null, 
                 $reference, 
                 $amount, 
-                'SUCCESS',
-                [
-                    'notes' => $notes,
-                    'note_summary' => implode(', ', $noteSummary),
-                    'sat_number' => $satNumber
-                ]
+                'SUCCESS'
             );
 
+            // DR interbank receivable / CR ATM cash
             $this->postLedgerEntry(
                 $reference,
                 'ASSET-INTERBANK-REC',
@@ -870,16 +878,14 @@ class ATMService
                     fee,
                     net_amount,
                     status,
-                    notes,
                     created_at
-                ) VALUES (?, ?, ?, 0, ?, 'PENDING', ?, NOW())
+                ) VALUES (?, ?, ?, 0, ?, 'PENDING', NOW())
             ");
             $stmt->execute([
                 $satNumber,
                 $sat['issuer_bank'] ?? 'UNKNOWN',
                 $amount,
-                $amount,
-                json_encode(['notes' => $notes, 'note_summary' => implode(', ', $noteSummary)])
+                $amount
             ]);
 
             $this->pdo->commit();
