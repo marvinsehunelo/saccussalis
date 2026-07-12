@@ -7,6 +7,15 @@ class ATMService
     
     // ATM denominations/notes available
     private array $denominations = [200, 100, 50, 20, 10];
+    
+    // Ledger account mappings - MATCHING YOUR ACTUAL ACCOUNTS
+    private array $ledgerAccounts = [
+        'wallet_liability' => 'WALLET-CONTROL',        // Customer Wallet Liabilities
+        'atm_cash' => 'ATM-001',                       // ATM Cash Float
+        'interbank_rec' => 'ASSET-INTERBANK-REC',      // Interbank Settlement Receivable
+        'atm_fee_income' => 'INC-ATM-FEE',             // ATM Withdrawal Fee Income
+        'settlement' => 'ASSET-MAIN-SETTLEMENT'        // Main Settlement Account
+    ];
 
     public function __construct()
     {
@@ -49,10 +58,6 @@ class ATMService
         $stmt->execute([$amount, $atmId]);
     }
 
-    /**
-     * Insert ATM transaction - Matches your exact table schema
-     * Table: atm_transactions (id, atm_id, user_id, transaction_reference, amount, status, created_at)
-     */
     private function insertAtmTransaction(int $atmId, ?int $userId, string $reference, float $amount, string $status): void
     {
         $stmt = $this->pdo->prepare("
@@ -118,7 +123,6 @@ class ATMService
 
     /**
      * Calculate the optimal note combination for a given amount
-     * Returns array of note denominations and count
      */
     private function calculateNotes(float $amount): array
     {
@@ -133,7 +137,6 @@ class ATMService
             }
         }
         
-        // If there's remaining amount that can't be dispensed with available notes
         if ($remaining > 0) {
             throw new Exception("Amount cannot be dispensed with available denominations. Please use multiples of " . min($this->denominations));
         }
@@ -143,11 +146,9 @@ class ATMService
 
     /**
      * Get wallet balance for a user from wallets table
-     * This is the SOURCE OF TRUTH for balance
      */
     private function getWalletBalance(string $phone): array
     {
-        // Try with + prefix first, then without
         $stmt = $this->pdo->prepare("
             SELECT wallet_id, user_id, phone, balance, held_balance, status, is_frozen
             FROM wallets 
@@ -187,7 +188,6 @@ class ATMService
 
     /**
      * Validate a PIN from ewallet_pins table
-     * Returns the PIN record if valid
      */
     private function validatePin(string $pin, string $phone): array
     {
@@ -231,7 +231,6 @@ class ATMService
 
     /**
      * Cashout Ewallet - Validates PIN, checks wallet balance, dispenses cash
-     * PIN is just the "key" - balance comes from wallets table
      */
     public function cashoutEwallet(int $atmId, string $phone, string $pin, float $amount): array
     {
@@ -242,10 +241,10 @@ class ATMService
             $atm = $this->getAtmForUpdate($atmId);
             $this->ensureAtmHasCash($atm, $amount);
 
-            // 2. Validate the PIN from ewallet_pins table
+            // 2. Validate the PIN
             $pinRecord = $this->validatePin($pin, $phone);
             
-            // 3. Get wallet balance (SOURCE OF TRUTH)
+            // 3. Get wallet balance
             $wallet = $this->getWalletBalance($phone);
             
             // 4. Check if wallet has sufficient balance
@@ -257,7 +256,7 @@ class ATMService
                 );
             }
 
-            // 5. Calculate note denominations for the requested amount
+            // 5. Calculate note denominations
             $notes = $this->calculateNotes($amount);
             $noteSummary = [];
             foreach ($notes as $denom => $count) {
@@ -267,7 +266,7 @@ class ATMService
             // 6. Generate reference
             $reference = 'EWL-ATM-' . $pinRecord['id'] . '-' . time();
 
-            // 7. Mark PIN as redeemed in ewallet_pins
+            // 7. Mark PIN as redeemed
             $this->markPinAsRedeemed($pinRecord['id'], 'ATM-' . $atmId);
 
             // 8. Deduct from wallet balance
@@ -276,7 +275,7 @@ class ATMService
             // 9. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            // 10. Record ATM transaction (matches your table schema)
+            // 10. Record ATM transaction
             $this->insertAtmTransaction(
                 $atmId, 
                 $wallet['user_id'], 
@@ -285,19 +284,22 @@ class ATMService
                 'SUCCESS'
             );
 
-            // 11. Post ledger entries
+            // 11. Post ledger entries using CORRECT account mappings
+            // DR: Wallet Liability (decrease liability) - Debit WALLET-CONTROL
+            // CR: ATM Cash Asset (decrease asset) - Credit ATM-001
             $this->postLedgerEntry(
                 $reference,
-                'WALLET-LIABILITY',
-                $atm['atm_code'],
+                $this->ledgerAccounts['wallet_liability'],  // WALLET-CONTROL
+                $this->ledgerAccounts['atm_cash'],          // ATM-001
                 $amount,
                 'ATM_CASHOUT',
                 "Ewallet cashout - " . implode(', ', $noteSummary),
                 "Phone: {$phone}, PIN ID: {$pinRecord['id']}, Wallet: {$wallet['wallet_id']}"
             );
 
-            $this->updateLedgerAccountBalance('WALLET-LIABILITY', -$amount);
-            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);
+            // Update ledger balances
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['wallet_liability'], -$amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
 
             $this->pdo->commit();
 
@@ -333,7 +335,6 @@ class ATMService
 
     /**
      * Get wallet balance for display
-     * Shows balance from wallets table (SOURCE OF TRUTH)
      */
     public function getBalance(string $phone): array
     {
@@ -372,29 +373,23 @@ class ATMService
 
     /**
      * Place a hold on PIN and wallet
-     * This is called BEFORE cashout to reserve funds
      */
     public function placeHold(string $pin, string $phone, float $amount, int $atmId): array
     {
         try {
             $this->pdo->beginTransaction();
 
-            // 1. Validate PIN
             $pinRecord = $this->validatePin($pin, $phone);
-
-            // 2. Get wallet balance
             $wallet = $this->getWalletBalance($phone);
             
-            // 3. Check available balance
             $availableBalance = (float)$wallet['balance'] - (float)($wallet['held_balance'] ?? 0);
             if ($availableBalance < $amount) {
                 throw new Exception("Insufficient wallet balance. Available: P" . number_format($availableBalance, 2));
             }
 
-            // 4. Generate hold reference
             $holdReference = 'HOLD-' . time() . '-' . rand(1000, 9999);
 
-            // 5. Update PIN hold status
+            // Update PIN hold status
             $stmt = $this->pdo->prepare("
                 UPDATE ewallet_pins 
                 SET hold_status = true, 
@@ -409,7 +404,7 @@ class ATMService
                 $pinRecord['id']
             ]);
 
-            // 6. Update wallet held_balance
+            // Update wallet held_balance
             $stmt = $this->pdo->prepare("
                 UPDATE wallets 
                 SET held_balance = COALESCE(held_balance, 0) + ? 
@@ -417,7 +412,7 @@ class ATMService
             ");
             $stmt->execute([$amount, $wallet['wallet_id']]);
 
-            // 7. Insert into financial_holds
+            // Insert into financial_holds
             $stmt = $this->pdo->prepare("
                 INSERT INTO financial_holds 
                     (wallet_id, amount, hold_reference, foreign_bank, session_id, status, 
@@ -460,14 +455,13 @@ class ATMService
     }
 
     /**
-     * Release a hold (reverses the hold)
+     * Release a hold
      */
     public function releaseHold(string $holdReference): array
     {
         try {
             $this->pdo->beginTransaction();
             
-            // Find the PIN hold
             $stmt = $this->pdo->prepare("
                 SELECT id, hold_reference
                 FROM ewallet_pins 
@@ -481,7 +475,6 @@ class ATMService
                 throw new Exception("PIN hold not found for reference: $holdReference");
             }
             
-            // Find the financial hold
             $stmt = $this->pdo->prepare("
                 SELECT id, wallet_id, amount 
                 FROM financial_holds 
@@ -492,7 +485,6 @@ class ATMService
             $hold = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($hold) {
-                // Release financial hold
                 $stmt = $this->pdo->prepare("
                     UPDATE financial_holds 
                     SET status = 'RELEASED', released_at = NOW() 
@@ -500,7 +492,6 @@ class ATMService
                 ");
                 $stmt->execute([$hold['id']]);
                 
-                // Release wallet held_balance
                 $stmt = $this->pdo->prepare("
                     UPDATE wallets 
                     SET held_balance = GREATEST(COALESCE(held_balance, 0) - ?, 0) 
@@ -509,7 +500,6 @@ class ATMService
                 $stmt->execute([$hold['amount'], $hold['wallet_id']]);
             }
             
-            // Release PIN hold
             $stmt = $this->pdo->prepare("
                 UPDATE ewallet_pins 
                 SET hold_status = false, 
@@ -539,18 +529,15 @@ class ATMService
     }
 
     /**
-     * Complete cashout with hold (for after hold is placed)
-     * This redeems the PIN and deducts from wallet
+     * Complete cashout with hold
      */
     public function completeCashoutWithHold(int $atmId, string $holdReference): array
     {
         try {
             $this->pdo->beginTransaction();
 
-            // 1. Get and validate ATM
             $atm = $this->getAtmForUpdate($atmId);
 
-            // 2. Find the held PIN
             $stmt = $this->pdo->prepare("
                 SELECT ep.*, w.wallet_id, w.user_id, w.phone, w.balance
                 FROM ewallet_pins ep
@@ -567,7 +554,6 @@ class ATMService
                 throw new Exception("Held PIN not found for reference: $holdReference");
             }
 
-            // 3. Find the financial hold
             $stmt = $this->pdo->prepare("
                 SELECT id, wallet_id, amount 
                 FROM financial_holds 
@@ -584,17 +570,14 @@ class ATMService
             $amount = (float)$hold['amount'];
             $this->ensureAtmHasCash($atm, $amount);
 
-            // 4. Calculate notes
             $notes = $this->calculateNotes($amount);
             $noteSummary = [];
             foreach ($notes as $denom => $count) {
                 $noteSummary[] = "{$count} x P{$denom}";
             }
 
-            // 5. Mark PIN as redeemed
             $this->markPinAsRedeemed($pinRecord['id'], 'ATM-' . $atmId);
 
-            // 6. Deduct from wallet balance (held balance was already reserved)
             $stmt = $this->pdo->prepare("
                 UPDATE wallets 
                 SET balance = balance - ?,
@@ -609,7 +592,6 @@ class ATMService
                 throw new Exception("Insufficient wallet balance");
             }
 
-            // 7. Update financial hold status
             $stmt = $this->pdo->prepare("
                 UPDATE financial_holds 
                 SET status = 'DEBITED', debited_at = NOW(), debited_by = ? 
@@ -617,13 +599,10 @@ class ATMService
             ");
             $stmt->execute(['ATM-' . $atmId, $hold['id']]);
 
-            // 8. Reduce ATM cash
             $this->reduceAtmCash($atmId, $amount);
 
-            // 9. Generate reference
             $reference = 'EWL-ATM-HOLD-' . $pinRecord['id'] . '-' . time();
 
-            // 10. Record ATM transaction (matches your table schema)
             $this->insertAtmTransaction(
                 $atmId, 
                 $pinRecord['user_id'], 
@@ -632,23 +611,22 @@ class ATMService
                 'SUCCESS'
             );
 
-            // 11. Post ledger entries
+            // Post ledger entries with CORRECT account mappings
             $this->postLedgerEntry(
                 $reference,
-                'WALLET-LIABILITY',
-                $atm['atm_code'],
+                $this->ledgerAccounts['wallet_liability'],  // WALLET-CONTROL
+                $this->ledgerAccounts['atm_cash'],          // ATM-001
                 $amount,
-                'ATM_CASHOUT',
+                'ATM_CASHOUT_HOLD',
                 "Ewallet cashout with hold - " . implode(', ', $noteSummary),
                 "Hold: {$holdReference}, PIN ID: {$pinRecord['id']}"
             );
 
-            $this->updateLedgerAccountBalance('WALLET-LIABILITY', -$amount);
-            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['wallet_liability'], -$amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
 
             $this->pdo->commit();
 
-            // Get updated balance
             $newBalance = (float)$pinRecord['balance'] - $amount;
 
             return [
@@ -847,7 +825,6 @@ class ATMService
 
             $reference = 'SAT-CASHOUT-' . $sat['sat_id'] . '-' . time();
 
-            // Record ATM transaction (matches your table schema)
             $this->insertAtmTransaction(
                 $atmId, 
                 null, 
@@ -856,19 +833,19 @@ class ATMService
                 'SUCCESS'
             );
 
-            // DR interbank receivable / CR ATM cash
+            // SAT uses interbank settlement
             $this->postLedgerEntry(
                 $reference,
-                'ASSET-INTERBANK-REC',
-                $atm['atm_code'],
+                $this->ledgerAccounts['interbank_rec'],    // ASSET-INTERBANK-REC
+                $this->ledgerAccounts['atm_cash'],          // ATM-001
                 $amount,
                 'SAT_CASHOUT',
                 'SAT cashout completed - ' . implode(', ', $noteSummary),
                 'ATM dispensed cash for SAT: ' . $satNumber
             );
 
-            $this->updateLedgerAccountBalance('ASSET-INTERBANK-REC', $amount);
-            $this->updateLedgerAccountBalance($atm['atm_code'], -$amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['interbank_rec'], $amount);
+            $this->updateLedgerAccountBalance($this->ledgerAccounts['atm_cash'], -$amount);
 
             $stmt = $this->pdo->prepare("
                 INSERT INTO interbank_claims (
