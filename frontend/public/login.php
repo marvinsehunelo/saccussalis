@@ -129,6 +129,31 @@ button:active {
     border-left: 4px solid #3a3;
     color: #060;
 }
+
+.register-link {
+    margin-top: 15px;
+    font-size: 14px;
+    color: #555;
+}
+
+.register-link a {
+    color: #0a2342;
+    font-weight: 700;
+    text-decoration: none;
+    border-bottom: 2px solid #0a2342;
+    transition: color 0.3s, border-color 0.3s;
+}
+
+.register-link a:hover {
+    color: #1a3c72;
+    border-bottom-color: #1a3c72;
+}
+
+.divider {
+    margin: 20px 0;
+    border: none;
+    border-top: 1px solid #e0e0e0;
+}
 </style>
 </head>
 <body>
@@ -149,6 +174,13 @@ button:active {
         </div>
         <button type="submit">Login</button>
     </form>
+
+    <hr class="divider">
+
+    <!-- Register Link -->
+    <div class="register-link">
+        Don't have an account? <a href="register.php">Register Now</a>
+    </div>
 
     <div class="footer">&copy; <?php echo date("Y"); ?> Saccussalis Bank. All Rights Reserved.</div>
 </div>
@@ -179,7 +211,7 @@ document.getElementById("loginForm").addEventListener("submit", async function(e
         }
 
         if(result.status === "success") {
-            localStorage.setItem("authToken", result.token); // save token for dashboard
+            localStorage.setItem("authToken", result.token);
             msgBox.innerHTML = '<div class="success">' + result.message + '</div>';
             setTimeout(() => {
                 window.location.href = "../dashboard/dashboard.php";
