@@ -42,23 +42,21 @@ $token = $_SESSION['authToken'];
 
     body {
         margin: 0;
-        font-family: var(--font-serif); /* Use Libre Baskerville for body */
+        font-family: var(--font-serif);
         background: var(--color-bg-primary);
         color: var(--color-fg-primary);
         line-height: 1.6;
         padding-top: 20px;
     }
 
-    /* Typography: Use Libre Baskerville for all text */
     .dashboard-container h1, .card h2, .summary-box h2, .vogue-nav button, .vogue-button {
         font-family: var(--font-serif);
-        font-weight: 700; /* Bolder for headings and accents */
+        font-weight: 700;
         letter-spacing: 0.5px;
     }
     
-    /* Elegant Capitalization Scheme */
     .dashboard-container h1, .card h2, .summary-box h2, .vogue-nav button.active, .role-badge, .vogue-button {
-        text-transform: uppercase; /* All Caps for titles and buttons */
+        text-transform: uppercase;
     }
     
     .dashboard-container {
@@ -67,7 +65,6 @@ $token = $_SESSION['authToken'];
         padding: 15px;
     }
 
-    /* --- Header & Summary --- */
     header {
         display: flex;
         justify-content: space-between;
@@ -97,47 +94,45 @@ $token = $_SESSION['authToken'];
         margin-right: 10px;
     }
 
-    /* High-Contrast Summary Box - Black Box */
     .summary-box {
         background: var(--color-accent);
         color: var(--color-bg-primary);
-        padding: 20px 30px; /* Increased padding */
+        padding: 20px 30px;
         margin-bottom: 20px;
-        box-shadow: var(--shadow-sharp); 
+        box-shadow: var(--shadow-sharp);
         border-radius: 0;
     }
 
     .summary-box h2 {
         margin: 0 0 5px 0;
         font-size: 14px;
-        font-weight: 400; /* Lighter weight for the label */
+        font-weight: 400;
         color: var(--color-border-subtle);
     }
     
     .summary-box p {
         margin: 0;
-        font-size: 40px; 
+        font-size: 40px;
         font-weight: 700;
-        color: var(--color-bg-primary); 
+        color: var(--color-bg-primary);
     }
 
-    /* --- Buttons & Navigation --- */
     .vogue-button {
         padding: 10px 20px;
         background: var(--color-accent);
-        color: var(--color-bg-primary); /* Cream White Text */
+        color: var(--color-bg-primary);
         border: 2px solid var(--color-accent);
         cursor: pointer;
-        font-weight: 700; 
+        font-weight: 700;
         font-size: 14px;
-        border-radius: 0; 
+        border-radius: 0;
         text-transform: uppercase;
         transition: all 0.2s;
         margin-left: 8px;
     }
     
     .vogue-button:hover {
-        background: var(--color-bg-primary); /* Invert on hover */
+        background: var(--color-bg-primary);
         border-color: var(--color-accent);
         color: var(--color-accent);
     }
@@ -160,7 +155,7 @@ $token = $_SESSION['authToken'];
         margin-bottom: 20px;
         padding: 10px;
         background: var(--color-bg-secondary);
-        box-shadow: var(--shadow-sharp); 
+        box-shadow: var(--shadow-sharp);
         overflow-x: auto;
         border: 1px solid var(--color-accent);
     }
@@ -170,12 +165,12 @@ $token = $_SESSION['authToken'];
         background: none;
         color: var(--color-fg-secondary);
         border: 1px solid transparent;
-        font-weight: 400; /* Regular weight for inactive tabs */
-        text-transform: capitalize; /* Title case for inactive tabs */
+        font-weight: 400;
+        text-transform: capitalize;
         transition: all 0.2s;
         cursor: pointer;
         border-radius: 0;
-        flex-shrink: 0; 
+        flex-shrink: 0;
     }
     
     .vogue-nav button.active {
@@ -183,7 +178,7 @@ $token = $_SESSION['authToken'];
         background-color: var(--color-accent);
         border: 2px solid var(--color-accent);
         font-weight: 700;
-        text-transform: uppercase; /* All Caps for active tab */
+        text-transform: uppercase;
     }
     
     .vogue-nav button:not(.active):hover {
@@ -191,17 +186,16 @@ $token = $_SESSION['authToken'];
         color: var(--color-fg-primary);
     }
 
-    /* --- Cards & Lists --- */
     .main-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 20px; 
+        gap: 20px;
     }
 
     .card {
         background: var(--color-bg-secondary);
-        padding: 25px; /* Increased padding */
-        box-shadow: var(--shadow-sharp); 
+        padding: 25px;
+        box-shadow: var(--shadow-sharp);
         border-radius: 0;
         border: 1px solid var(--color-accent);
     }
@@ -226,16 +220,17 @@ $token = $_SESSION['authToken'];
         background-color: var(--color-border-subtle);
     }
     
-    .muted-text { 
-        color: var(--color-fg-secondary); 
+    .muted-text {
+        color: var(--color-fg-secondary);
         font-size: 13px;
-        font-style: italic; /* Subtle difference for secondary text */
+        font-style: italic;
     }
 
     /* E-Wallet specific styles */
     .ewallet-item {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: 1.5fr 1fr 1fr 1fr 1.2fr;
+        gap: 10px;
         align-items: center;
         padding: 12px 0;
         border-bottom: 1px dashed var(--color-border-subtle);
@@ -257,10 +252,11 @@ $token = $_SESSION['authToken'];
     }
     
     .ewallet-pin {
-        font-size: 14px;
-        color: var(--color-fg-secondary);
+        font-size: 18px;
+        color: var(--color-fg-primary);
         font-family: monospace;
-        letter-spacing: 2px;
+        letter-spacing: 3px;
+        font-weight: 700;
     }
     
     .ewallet-status {
@@ -269,6 +265,9 @@ $token = $_SESSION['authToken'];
         font-weight: 700;
         text-transform: uppercase;
         border: 1px solid var(--color-accent);
+        text-align: center;
+        display: inline-block;
+        justify-self: start;
     }
     
     .status-active {
@@ -291,21 +290,20 @@ $token = $_SESSION['authToken'];
         border-color: #0066CC;
     }
 
-    /* --- Forms & Messages --- */
     .form-group label {
         display: block;
         font-size: 14px;
         font-weight: 700;
         margin-bottom: 5px;
         color: var(--color-fg-primary);
-        text-transform: capitalize; /* Title case for form labels */
+        text-transform: capitalize;
     }
 
     .form-group input, .form-group select, .vogue-message-box {
         width: 100%;
         padding: 10px;
         margin-bottom: 15px;
-        border: 1px solid var(--color-fg-secondary); /* Softer input border */
+        border: 1px solid var(--color-fg-secondary);
         background: var(--color-bg-secondary);
         color: var(--color-fg-primary);
         font-size: 16px;
@@ -327,13 +325,12 @@ $token = $_SESSION['authToken'];
     
     .pin-number {
         font-size: 28px;
-        color: var(--color-bg-primary); 
+        color: var(--color-bg-primary);
         display: block;
         margin-top: 5px;
-        font-family: var(--font-serif); 
+        font-family: var(--font-serif);
     }
     
-    /* Statement Section */
     .statement-section {
         grid-column: 1 / -1;
         margin-top: 20px;
@@ -343,6 +340,7 @@ $token = $_SESSION['authToken'];
         box-shadow: var(--shadow-sharp);
         border-radius: 0;
     }
+    
     .statement-section h3 {
         color: var(--color-fg-primary);
         border-bottom: 2px solid var(--color-accent);
@@ -353,10 +351,25 @@ $token = $_SESSION['authToken'];
         font-size: 20px;
     }
 
-    /* Responsive adjustments */
+    .ewallet-header {
+        display: grid;
+        grid-template-columns: 1.5fr 1fr 1fr 1fr 1.2fr;
+        gap: 10px;
+        padding: 10px 0;
+        font-weight: 700;
+        border-bottom: 2px solid var(--color-accent);
+    }
+
     @media (max-width: 768px) {
         .main-grid { grid-template-columns: 1fr; gap: 15px; }
         .summary-box p { font-size: 30px; }
+        .ewallet-item, .ewallet-header {
+            grid-template-columns: 1fr;
+            gap: 5px;
+        }
+        .ewallet-status {
+            justify-self: start;
+        }
     }
 </style>
 </head>
@@ -382,7 +395,6 @@ $token = $_SESSION['authToken'];
         <button id="nav-internalTransfer" onclick="showScreen('internalTransfer')">Same-Bank User</button>
         <button id="nav-externalTransfer" onclick="showScreen('externalTransfer')">External Transfer</button>
     </nav>
-
 
     <div id="content-area">
         <div id="dashboard-view" class="main-grid screen-view">
@@ -435,7 +447,7 @@ $token = $_SESSION['authToken'];
                 </div>
                 <div class="form-group">
                     <label for="ewalletRecipientPhone">Recipient Mobile Number</label>
-                    <input type="tel" id="ewalletRecipientPhone" placeholder="e.g., +27 12 345 6789" required>
+                    <input type="tel" id="ewalletRecipientPhone" placeholder="e.g., +267 71 234 567" required>
                 </div>
                 <div class="form-group">
                     <label for="ewalletTransferAmount">Amount (BWP)</label>
@@ -445,7 +457,6 @@ $token = $_SESSION['authToken'];
                 <div id="ewalletTransferMessage" class="vogue-message-box" style="display: none;"></div>
             </form>
         </div>
-
 
         <div id="internalTransfer-view" class="card screen-view" style="display: none; max-width: 600px; margin: 0 auto;">
             <h2>Transfer to Same-Bank User</h2>
@@ -468,44 +479,42 @@ $token = $_SESSION['authToken'];
         </div>
 
         <div id="externalTransfer-view" class="card screen-view" style="display: none; max-width: 600px; margin: 0 auto;">
-    <h2>Transfer to Other Bank</h2>
-    <form id="externalTransferForm" onsubmit="submitExternalTransfer(event)">
-        <div class="form-group">
-            <label for="externalTransferSource">From Account</label>
-            <select id="externalTransferSource" required></select>
-        </div>
-        <div class="form-group">
-            <label for="externalRecipientBank">Recipient Bank Name</label>
-            <input type="text" id="externalRecipientBank" placeholder="e.g., Global Finance Corp" required>
-        </div>
-        <div class="form-group">
-            <label for="externalRecipientAccount">Recipient Account Number</label>
-            <input type="text" id="externalRecipientAccount" placeholder="e.g., ABA/SWIFT/IBAN" required>
-        </div>
-        <div class="form-group">
-            <label for="externalTransferAmount">Amount (BWP)</label>
-            <input type="number" id="externalTransferAmount" step="0.01" min="0.01" required>
-        </div>
-        <button type="submit" class="vogue-button" id="externalTransferBtn">Confirm Transfer</button>
-        <div id="externalTransferMessage" class="vogue-message-box" style="display: none;"></div>
-        <div id="externalTransferPIN" class="vogue-message-box" style="display: none;"></div>
-    </form>
+            <h2>Transfer to Other Bank</h2>
+            <form id="externalTransferForm" onsubmit="submitExternalTransfer(event)">
+                <div class="form-group">
+                    <label for="externalTransferSource">From Account</label>
+                    <select id="externalTransferSource" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="externalRecipientBank">Recipient Bank Name</label>
+                    <input type="text" id="externalRecipientBank" placeholder="e.g., Global Finance Corp" required>
+                </div>
+                <div class="form-group">
+                    <label for="externalRecipientAccount">Recipient Account Number</label>
+                    <input type="text" id="externalRecipientAccount" placeholder="e.g., ABA/SWIFT/IBAN" required>
+                </div>
+                <div class="form-group">
+                    <label for="externalTransferAmount">Amount (BWP)</label>
+                    <input type="number" id="externalTransferAmount" step="0.01" min="0.01" required>
+                </div>
+                <button type="submit" class="vogue-button" id="externalTransferBtn">Confirm Transfer</button>
+                <div id="externalTransferMessage" class="vogue-message-box" style="display: none;"></div>
+                <div id="externalTransferPIN" class="vogue-message-box" style="display: none;"></div>
+            </form>
         </div>
     </div>
     
     <div class="statement-section">
-      <h3>Download Bank Statement</h3>
-      <input type="date" id="startDate">
-      <input type="date" id="endDate">
-      <button onclick="downloadBankStatement()" class="vogue-button">Download PDF</button>
+        <h3>Download Bank Statement</h3>
+        <input type="date" id="startDate">
+        <input type="date" id="endDate">
+        <button onclick="downloadBankStatement()" class="vogue-button">Download PDF</button>
     </div>
-
 </div>
 
 <script>
 // Use PHP session token
 const token = "<?php echo $token; ?>";
-// Define the single backend endpoint path
 const BACKEND_ENDPOINT = '../../backend/accounts/dashboard.php';
 
 if (!token) {
@@ -526,8 +535,8 @@ function parseResponse(res) {
             }
         }
         try { return JSON.parse(text); } catch (e) {
-            console.error("Failed to parse JSON response. Received raw text (check for PHP errors):", text);
-            return { status: 'error', message: 'Server did not return valid JSON. Check your PHP code for warnings/errors.' };
+            console.error("Failed to parse JSON response. Received raw text:", text);
+            return { status: 'error', message: 'Server did not return valid JSON.' };
         }
     });
 }
@@ -536,25 +545,21 @@ function formatCurrency(amount) {
     return parseFloat(amount).toFixed(2);
 }
 
-// Updated showMessage to handle PIN prominently
 function showMessage(elementId, message, isSuccess, pin = null) {
     const el = document.getElementById(elementId);
     if (!el) {
         console.warn(`showMessage: element with ID "${elementId}" not found.`);
         return;
     }
-    el.innerHTML = ''; // Clear previous content
+    el.innerHTML = '';
     
-    // Brutalist Message Box Styling
     const statusClass = isSuccess ? 'success' : 'error';
     el.className = `vogue-message-box ${statusClass}`;
     el.style.border = `1px solid ${isSuccess ? 'var(--color-positive)' : 'var(--color-negative)'}`;
     el.style.backgroundColor = 'var(--color-bg-primary)';
     el.style.color = isSuccess ? 'var(--color-positive)' : 'var(--color-negative)';
 
-
     if (isSuccess && pin) {
-        // For E-Wallet, show the PIN prominently
         el.innerHTML = `
             ${message}
             <div class="pin-box">
@@ -569,7 +574,6 @@ function showMessage(elementId, message, isSuccess, pin = null) {
     }
 
     el.style.display = 'block';
-    // Keep success messages with PIN visible for longer
     const timeout = isSuccess && pin ? 15000 : 6000;
     setTimeout(() => { el.style.display = 'none'; }, timeout);
 }
@@ -577,16 +581,12 @@ function showMessage(elementId, message, isSuccess, pin = null) {
 // --- Screen Management ---
 function showScreen(view) {
     currentView = view;
-    // Hide all views
     document.querySelectorAll('.screen-view').forEach(el => el.style.display = 'none');
-    // Show the selected view
     document.getElementById(view + '-view').style.display = 'block';
 
-    // Update navigation styles
     document.querySelectorAll('.vogue-nav button').forEach(btn => btn.classList.remove('active'));
     document.getElementById('nav-' + view).classList.add('active');
     
-    // If we are showing a transfer screen, populate the source dropdowns
     if (view !== 'dashboard') {
         populateSourceDropdowns(view);
     }
@@ -597,9 +597,8 @@ function populateSourceDropdowns(view) {
     const destId = view + 'Destination';
     const sourceSelect = document.getElementById(sourceId);
     
-    if (!sourceSelect) return; 
+    if (!sourceSelect) return;
     
-    // Clear existing options
     sourceSelect.innerHTML = '<option value="">Select Account</option>';
 
     if (view === 'ownTransfer') {
@@ -609,7 +608,6 @@ function populateSourceDropdowns(view) {
         }
     }
 
-    // Populate Source/Destination based on accountData
     (accountData || []).forEach(acc => {
         const option = document.createElement('option');
         option.value = acc.account_number;
@@ -617,7 +615,6 @@ function populateSourceDropdowns(view) {
         sourceSelect.appendChild(option);
     });
 
-    // Event listener for own transfer to update destination options
     if (view === 'ownTransfer') {
         const destSelect = document.getElementById(destId);
         if (destSelect) {
@@ -646,25 +643,22 @@ function fetchDashboardData() {
     .then(res => parseResponse(res))
     .then(data => {
         if (data.status !== 'success') {
-            safeShowMessage('totalBalance', data.message || 'Error fetching data. See console.', false);
+            safeShowMessage('totalBalance', data.message || 'Error fetching data.', false);
             console.error("Dashboard Fetch Error:", data.message);
             return;
         }
 
-        // Store accounts globally
         accountData = data.accounts || [];
 
-        // Update Header
-        document.getElementById('username').textContent = 'Saccussalis Private Bank'; // Static for title consistency
+        document.getElementById('username').textContent = 'Saccussalis Private Bank';
         document.getElementById('userRole').textContent = data.role ? data.role.toUpperCase() : 'CLIENT';
         document.getElementById('totalBalance').textContent = formatCurrency(data.totalBalance);
 
-        // Render Dashboard Views
         renderAccounts(data.accounts);
         renderTransactions(data.recentTransactions, 'transactionsList', 'type');
-        renderEwallets(data.ewallets || []); // Render e-wallets
-        renderTransactions(data.pendingWalletTransactions, 'walletList', 'id', true); 
-        loadExternalTransferSources(); // Ensure external transfer sources are updated
+        renderEwallets(data.ewallets || []);
+        renderTransactions(data.pendingWalletTransactions, 'walletList', 'id', true);
+        loadExternalTransferSources();
     })
     .catch(err => {
         console.error('Fetch error:', err);
@@ -697,32 +691,40 @@ function renderEwallets(ewallets) {
     ewalletList.innerHTML = '';
     
     if (!ewallets || ewallets.length === 0) {
-        ewalletList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No e-wallet transactions found.</div>';
+        ewalletList.innerHTML = '<div class="muted-text" style="padding: 15px 0; text-align: center;">No e-wallet transactions found for your phone number.</div>';
         return;
     }
     
-    ewalletList.innerHTML = `
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 10px; padding: 10px 0; font-weight: 700; border-bottom: 2px solid var(--color-accent);">
-            <span>Recipient</span>
-            <span>Sender</span>
-            <span>PIN</span>
-            <span>Amount</span>
-            <span>Status</span>
-        </div>
+    // Create header
+    const header = document.createElement('div');
+    header.className = 'ewallet-header';
+    header.innerHTML = `
+        <span>Recipient</span>
+        <span>Sender</span>
+        <span>PIN</span>
+        <span>Amount</span>
+        <span>Status</span>
     `;
+    ewalletList.appendChild(header);
     
     (ewallets || []).forEach(wallet => {
         const div = document.createElement('div');
         div.className = 'ewallet-item';
         
-        // Determine status based on is_redeemed and other fields
+        // Determine status - handle boolean and string values
+        const isRedeemed = wallet.is_redeemed === true || wallet.is_redeemed === 'true' || wallet.is_redeemed === 1;
+        
         let statusClass = 'status-pending';
         let statusText = 'PENDING';
         
-        if (wallet.is_redeemed == 1) {
+        if (isRedeemed) {
             statusClass = 'status-redeemed';
             statusText = 'REDEEMED';
-        } else if (wallet.hold_status && wallet.hold_status !== '') {
+            if (wallet.redeemed_at && wallet.redeemed_at !== '0000-00-00 00:00:00') {
+                const redeemedDate = new Date(wallet.redeemed_at).toLocaleDateString();
+                statusText += ` ✓ (${redeemedDate})`;
+            }
+        } else if (wallet.hold_status && wallet.hold_status !== '' && wallet.hold_status !== 'false') {
             statusClass = 'status-inactive';
             statusText = 'ON HOLD';
         } else if (wallet.expires_at && new Date(wallet.expires_at) < new Date()) {
@@ -733,12 +735,17 @@ function renderEwallets(ewallets) {
             statusText = 'ACTIVE';
         }
         
+        // Format dates
+        const createdDate = wallet.created_at ? new Date(wallet.created_at).toLocaleDateString() : '';
+        const expiresDate = wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '';
+        
         div.innerHTML = `
             <div class="ewallet-info">
                 <span class="ewallet-phone">${wallet.recipient_phone || 'N/A'}</span>
-                <span class="muted-text" style="font-size: 12px;">${wallet.created_at ? new Date(wallet.created_at).toLocaleDateString() : ''}</span>
+                <span class="muted-text" style="font-size: 11px;">Created: ${createdDate}</span>
+                ${expiresDate ? `<span class="muted-text" style="font-size: 10px;">Expires: ${expiresDate}</span>` : ''}
             </div>
-            <span class="ewallet-phone" style="font-size: 14px;">${wallet.sender_phone || 'N/A'}</span>
+            <span style="font-size: 14px;">${wallet.sender_phone || 'N/A'}</span>
             <span class="ewallet-pin">${wallet.pin || 'N/A'}</span>
             <span style="font-weight: 700;">$${formatCurrency(wallet.amount || 0)}</span>
             <span class="ewallet-status ${statusClass}">${statusText}</span>
@@ -768,14 +775,12 @@ function renderTransactions(transactions, listId, typeField, isPending = false) 
     }
 }
 
-// --- Safe Message Helper ---
 function safeShowMessage(elementId, message, isSuccess) {
     const el = document.getElementById(elementId);
     if (!el) {
         console.warn(`safeShowMessage: element with ID "${elementId}" not found.`);
         return;
     }
-    // Using the full showMessage to get the styled boxes
     showMessage(elementId, message, isSuccess);
 }
 
@@ -784,19 +789,16 @@ document.addEventListener('DOMContentLoaded', fetchDashboardData);
 
 let dashboardInterval = null;
 
-// Fetch dashboard every 30s
 function startDashboardAutoFetch() {
     dashboardInterval = setInterval(fetchDashboardData, 30000);
 }
 
-// Stop auto-fetch
 function stopDashboardAutoFetch() {
     if (dashboardInterval) clearInterval(dashboardInterval);
 }
 
-// Logout function
 function logout() {
-    stopDashboardAutoFetch(); // Stop any dashboard fetches
+    stopDashboardAutoFetch();
     fetch('../../backend/auth/logout.php', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -806,26 +808,20 @@ function logout() {
     });
 }
 
-
-// statement
 function downloadBankStatement() {
     const start = document.getElementById('startDate').value || '';
     const end = document.getElementById('endDate').value || '';
     window.open(`../../backend/reports/bank_statement.php?start_date=${start}&end_date=${end}`, '_blank');
 }
 
-
 function handleTransfer(event, type) {
     event.preventDefault();
-    // Assuming a simple balance check is sufficient as 2FA logic was removed in the previous prompt.
     if (type === 'ownTransfer') submitOwnTransfer(event);
     else if (type === 'internalTransfer') submitInternalTransfer(event);
     else if (type === 'ewalletTransfer') submitEwalletTransfer(event);
 }
 
-
 // ---------------------- Transfer Functions ----------------------
-// external transfer 
 function submitExternalTransfer(event) {
     event.preventDefault();
     const source = document.getElementById('externalTransferSource').value;
@@ -843,14 +839,12 @@ function submitExternalTransfer(event) {
         return;
     }
 
-    // Check source account in accountData
     const srcAcc = accountData.find(acc => acc.account_number === source);
     if (!srcAcc) {
         showMessage('externalTransferMessage', 'Source account not found', false);
         return;
     }
 
-    // Fee: 1.5% or min $2
     const fee = Math.max(2, parseFloat((amount * 0.015).toFixed(2)));
     const totalDebit = amount + fee;
 
@@ -890,7 +884,6 @@ function submitExternalTransfer(event) {
     });
 }
 
-// Populate source accounts dropdown 
 function loadExternalTransferSources() {
     const select = document.getElementById('externalTransferSource');
     if (!select) return;
@@ -903,11 +896,10 @@ function loadExternalTransferSources() {
     });
 }
 
-// Internal Transfer (to other user)
 function submitInternalTransfer(event) {
     event.preventDefault();
     const source = document.getElementById('internalTransferSource').value;
-    const target = document.getElementById('internalRecipientAccount').value; // Target is now an input field for account number
+    const target = document.getElementById('internalRecipientAccount').value;
     const amount = parseFloat(document.getElementById('internalTransferAmount').value);
 
     if (!source || !target || !amount) {
@@ -921,7 +913,6 @@ function submitInternalTransfer(event) {
         return;
     }
 
-    // Internal fee: 0.5% or min $1
     const fee = Math.max(1, amount * 0.005);
     const totalDebit = amount + fee;
 
@@ -949,7 +940,6 @@ function submitInternalTransfer(event) {
     });
 }
 
-// Own Transfer (between user's accounts)
 function submitOwnTransfer(event) {
     event.preventDefault();
     const source = document.getElementById('ownTransferSource').value;
@@ -971,7 +961,6 @@ function submitOwnTransfer(event) {
         return;
     }
 
-    // Own transfer has no fee
     if (amount > srcAcc.balance) {
         showMessage('ownTransferMessage', `Insufficient funds. Available: $${formatCurrency(srcAcc.balance)}`, false);
         return;
@@ -996,7 +985,6 @@ function submitOwnTransfer(event) {
     });
 }
 
-// E-Wallet Transfer
 function submitEwalletTransfer(event) {
     event.preventDefault();
 
@@ -1009,14 +997,12 @@ function submitEwalletTransfer(event) {
         return;
     }
 
-    // Find account by account_number
     const srcAcc = accountData.find(acc => acc.account_number === source);
     if (!srcAcc) {
         showMessage('ewalletTransferMessage', 'Source account not found.', false);
         return;
     }
 
-    // Check balance
     if (amount > srcAcc.balance) {
         showMessage(
             'ewalletTransferMessage',
@@ -1026,7 +1012,6 @@ function submitEwalletTransfer(event) {
         return;
     }
 
-    // Send POST request to backend
     fetch('../../backend/wallet/ewallet_transfer.php', {
         method: 'POST',
         headers: {
@@ -1041,14 +1026,10 @@ function submitEwalletTransfer(event) {
     })
     .then(res => parseResponse(res))
     .then(data => {
-        // Display feedback
         showMessage('ewalletTransferMessage', data.message, data.status === 'success', data.pin || null);
 
         if (data.status === 'success') {
-            // Refresh dashboard data
             fetchDashboardData();
-
-            // Reset form
             document.getElementById('ewalletTransferForm').reset();
         }
     })
@@ -1060,7 +1041,6 @@ function submitEwalletTransfer(event) {
 
 // ---------------------- Attach Event Listeners ----------------------
 document.addEventListener('DOMContentLoaded', () => {
-    // Only attach transfer handlers to the forms, as the buttons call the handleTransfer/submit functions directly
     document.getElementById('externalTransferForm').addEventListener('submit', submitExternalTransfer);
     document.getElementById('ownTransferForm').addEventListener('submit', (e) => handleTransfer(e, 'ownTransfer'));
     document.getElementById('internalTransferForm').addEventListener('submit', (e) => handleTransfer(e, 'internalTransfer'));
