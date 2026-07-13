@@ -130,29 +130,46 @@ button:active {
     color: #060;
 }
 
+/* Register Link - Made more prominent */
+.register-section {
+    margin-top: 25px;
+    padding-top: 20px;
+    border-top: 2px solid #0a2342;
+}
+
 .register-link {
-    margin-top: 15px;
-    font-size: 14px;
-    color: #555;
+    font-size: 15px;
+    color: #333;
+    font-weight: 400;
 }
 
 .register-link a {
     color: #0a2342;
-    font-weight: 700;
+    font-weight: 900;
     text-decoration: none;
-    border-bottom: 2px solid #0a2342;
-    transition: color 0.3s, border-color 0.3s;
+    background: #f0f4ff;
+    padding: 8px 20px;
+    border: 2px solid #0a2342;
+    display: inline-block;
+    margin-top: 8px;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 14px;
 }
 
 .register-link a:hover {
-    color: #1a3c72;
-    border-bottom-color: #1a3c72;
+    background: #0a2342;
+    color: #fff;
+    border-color: #0a2342;
 }
 
-.divider {
-    margin: 20px 0;
-    border: none;
-    border-top: 1px solid #e0e0e0;
+.register-link .sub-text {
+    display: block;
+    font-size: 12px;
+    color: #777;
+    margin-bottom: 5px;
+    font-weight: 400;
 }
 </style>
 </head>
@@ -175,11 +192,12 @@ button:active {
         <button type="submit">Login</button>
     </form>
 
-    <hr class="divider">
-
-    <!-- Register Link -->
-    <div class="register-link">
-        Don't have an account? <a href="register.php">Register Now</a>
+    <!-- Register Section - More Prominent -->
+    <div class="register-section">
+        <div class="register-link">
+            <span class="sub-text">New to Saccussalis Bank?</span>
+            <a href="register.php">Create an Account →</a>
+        </div>
     </div>
 
     <div class="footer">&copy; <?php echo date("Y"); ?> Saccussalis Bank. All Rights Reserved.</div>
