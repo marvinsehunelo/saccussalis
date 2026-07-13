@@ -232,6 +232,60 @@ $token = $_SESSION['authToken'];
         font-style: italic; /* Subtle difference for secondary text */
     }
 
+    /* E-Wallet specific styles */
+    .ewallet-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 0;
+        border-bottom: 1px dashed var(--color-border-subtle);
+    }
+    
+    .ewallet-item:hover {
+        background-color: var(--color-border-subtle);
+    }
+    
+    .ewallet-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    
+    .ewallet-phone {
+        font-weight: 700;
+        font-size: 16px;
+    }
+    
+    .ewallet-pin {
+        font-size: 14px;
+        color: var(--color-fg-secondary);
+        font-family: monospace;
+        letter-spacing: 2px;
+    }
+    
+    .ewallet-status {
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        border: 1px solid var(--color-accent);
+    }
+    
+    .status-active {
+        color: var(--color-positive);
+        border-color: var(--color-positive);
+    }
+    
+    .status-inactive {
+        color: var(--color-negative);
+        border-color: var(--color-negative);
+    }
+    
+    .status-pending {
+        color: #FF8C00;
+        border-color: #FF8C00;
+    }
+
     /* --- Forms & Messages --- */
     .form-group label {
         display: block;
@@ -334,6 +388,11 @@ $token = $_SESSION['authToken'];
             <div class="card transactions">
                 <h2>Recent Transactions</h2>
                 <div id="transactionsList"></div>
+            </div>
+            <!-- NEW: E-Wallet Management Card -->
+            <div class="card ewallet-management" style="grid-column: 1 / -1; margin-top: 5px;">
+                <h2>E-Wallet Management</h2>
+                <div id="ewalletList"></div>
             </div>
             <div class="card wallet" style="grid-column: 1 / -1; margin-top: 5px;">
                 <h2>Pending Wallet Transactions</h2>
@@ -598,6 +657,7 @@ function fetchDashboardData() {
         // Render Dashboard Views
         renderAccounts(data.accounts);
         renderTransactions(data.recentTransactions, 'transactionsList', 'type');
+        renderEwallets(data.ewallets || []); // NEW: Render e-wallets
         renderTransactions(data.pendingWalletTransactions, 'walletList', 'id', true); 
         loadExternalTransferSources(); // Ensure external transfer sources are updated
     })
@@ -624,6 +684,53 @@ function renderAccounts(accounts) {
     if (!accounts || accounts.length === 0) {
         accountsList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No accounts found.</div>';
     }
+}
+
+// NEW: Render E-Wallets with PINs and Status
+function renderEwallets(ewallets) {
+    const ewalletList = document.getElementById('ewalletList');
+    ewalletList.innerHTML = '';
+    
+    if (!ewallets || ewallets.length === 0) {
+        ewalletList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No e-wallets found.</div>';
+        return;
+    }
+    
+    ewalletList.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; padding: 10px 0; font-weight: 700; border-bottom: 2px solid var(--color-accent);">
+            <span>Recipient</span>
+            <span>PIN</span>
+            <span>Amount</span>
+            <span>Status</span>
+        </div>
+    `;
+    
+    (ewallets || []).forEach(wallet => {
+        const div = document.createElement('div');
+        div.className = 'ewallet-item';
+        
+        // Determine status class
+        let statusClass = 'status-pending';
+        let statusText = 'PENDING';
+        if (wallet.status === 'active' || wallet.status === 'redeemed') {
+            statusClass = 'status-active';
+            statusText = 'ACTIVE';
+        } else if (wallet.status === 'expired' || wallet.status === 'cancelled') {
+            statusClass = 'status-inactive';
+            statusText = wallet.status.toUpperCase();
+        }
+        
+        div.innerHTML = `
+            <div class="ewallet-info">
+                <span class="ewallet-phone">${wallet.recipient_phone || 'N/A'}</span>
+                <span class="muted-text" style="font-size: 12px;">${wallet.created_at ? new Date(wallet.created_at).toLocaleDateString() : ''}</span>
+            </div>
+            <span class="ewallet-pin">${wallet.pin || 'N/A'}</span>
+            <span style="font-weight: 700;">$${formatCurrency(wallet.amount || 0)}</span>
+            <span class="ewallet-status ${statusClass}">${statusText}</span>
+        `;
+        ewalletList.appendChild(div);
+    });
 }
 
 function renderTransactions(transactions, listId, typeField, isPending = false) {
