@@ -285,6 +285,11 @@ $token = $_SESSION['authToken'];
         color: #FF8C00;
         border-color: #FF8C00;
     }
+    
+    .status-redeemed {
+        color: #0066CC;
+        border-color: #0066CC;
+    }
 
     /* --- Forms & Messages --- */
     .form-group label {
@@ -389,7 +394,7 @@ $token = $_SESSION['authToken'];
                 <h2>Recent Transactions</h2>
                 <div id="transactionsList"></div>
             </div>
-            <!-- NEW: E-Wallet Management Card -->
+            <!-- E-Wallet Management Card -->
             <div class="card ewallet-management" style="grid-column: 1 / -1; margin-top: 5px;">
                 <h2>E-Wallet Management</h2>
                 <div id="ewalletList"></div>
@@ -657,7 +662,7 @@ function fetchDashboardData() {
         // Render Dashboard Views
         renderAccounts(data.accounts);
         renderTransactions(data.recentTransactions, 'transactionsList', 'type');
-        renderEwallets(data.ewallets || []); // NEW: Render e-wallets
+        renderEwallets(data.ewallets || []); // Render e-wallets
         renderTransactions(data.pendingWalletTransactions, 'walletList', 'id', true); 
         loadExternalTransferSources(); // Ensure external transfer sources are updated
     })
@@ -686,19 +691,20 @@ function renderAccounts(accounts) {
     }
 }
 
-// NEW: Render E-Wallets with PINs and Status
+// Render E-Wallets from ewallet_pins table
 function renderEwallets(ewallets) {
     const ewalletList = document.getElementById('ewalletList');
     ewalletList.innerHTML = '';
     
     if (!ewallets || ewallets.length === 0) {
-        ewalletList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No e-wallets found.</div>';
+        ewalletList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No e-wallet transactions found.</div>';
         return;
     }
     
     ewalletList.innerHTML = `
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; padding: 10px 0; font-weight: 700; border-bottom: 2px solid var(--color-accent);">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 10px; padding: 10px 0; font-weight: 700; border-bottom: 2px solid var(--color-accent);">
             <span>Recipient</span>
+            <span>Sender</span>
             <span>PIN</span>
             <span>Amount</span>
             <span>Status</span>
@@ -709,15 +715,22 @@ function renderEwallets(ewallets) {
         const div = document.createElement('div');
         div.className = 'ewallet-item';
         
-        // Determine status class
+        // Determine status based on is_redeemed and other fields
         let statusClass = 'status-pending';
         let statusText = 'PENDING';
-        if (wallet.status === 'active' || wallet.status === 'redeemed') {
+        
+        if (wallet.is_redeemed == 1) {
+            statusClass = 'status-redeemed';
+            statusText = 'REDEEMED';
+        } else if (wallet.hold_status && wallet.hold_status !== '') {
+            statusClass = 'status-inactive';
+            statusText = 'ON HOLD';
+        } else if (wallet.expires_at && new Date(wallet.expires_at) < new Date()) {
+            statusClass = 'status-inactive';
+            statusText = 'EXPIRED';
+        } else {
             statusClass = 'status-active';
             statusText = 'ACTIVE';
-        } else if (wallet.status === 'expired' || wallet.status === 'cancelled') {
-            statusClass = 'status-inactive';
-            statusText = wallet.status.toUpperCase();
         }
         
         div.innerHTML = `
@@ -725,6 +738,7 @@ function renderEwallets(ewallets) {
                 <span class="ewallet-phone">${wallet.recipient_phone || 'N/A'}</span>
                 <span class="muted-text" style="font-size: 12px;">${wallet.created_at ? new Date(wallet.created_at).toLocaleDateString() : ''}</span>
             </div>
+            <span class="ewallet-phone" style="font-size: 14px;">${wallet.sender_phone || 'N/A'}</span>
             <span class="ewallet-pin">${wallet.pin || 'N/A'}</span>
             <span style="font-weight: 700;">$${formatCurrency(wallet.amount || 0)}</span>
             <span class="ewallet-status ${statusClass}">${statusText}</span>
@@ -1022,7 +1036,7 @@ function submitEwalletTransfer(event) {
         body: JSON.stringify({
             recipient_phone: recipient,
             amount: amount,
-            from_account_type: srcAcc.account_type // ✅ important for backend
+            from_account_type: srcAcc.account_type
         })
     })
     .then(res => parseResponse(res))
