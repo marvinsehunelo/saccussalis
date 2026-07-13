@@ -328,12 +328,11 @@
 
     <script>
         // ============================================================
-        // CONFIGURATION - Fix the API paths for Railway deployment
+        // CONFIGURATION - NO SIMULATION - REAL API ONLY
         // ============================================================
-        // Use relative paths from the root of your domain
         const API_BASE = '/backend/api/v1';
         const ATM_BASE = '/backend/atm';
-        const ATM_ID = 1; // Your ATM ID from the database
+        const ATM_ID = 1;
         
         // Current focused input
         let currentFocus = null;
@@ -355,43 +354,38 @@
                 });
             });
             
-            // Keyboard support - PREVENT DEFAULT to avoid double entry
+            // Keyboard support
             document.addEventListener('keydown', function(e) {
-                // Only handle if not in a text input (to avoid double entry)
                 if (e.target.tagName === 'INPUT' && e.target.type !== 'password') {
-                    // Let normal input handling happen
                     return;
                 }
                 handleKeyboard(e);
             });
             
-            // Keypad buttons - FIX: Use mousedown instead of click to prevent focus issues
+            // Keypad buttons
             document.querySelectorAll('.keypad-btn').forEach(btn => {
                 btn.addEventListener('mousedown', function(e) {
-                    e.preventDefault(); // Prevent focus stealing
+                    e.preventDefault();
                     const key = this.getAttribute('data-key');
                     handleKeyInput(key);
                 });
-                // Also keep click as fallback but prevent default
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
                 });
             });
             
-            // Focus tracking - store the focused input
+            // Focus tracking
             document.querySelectorAll('input').forEach(input => {
                 input.addEventListener('focus', function() {
                     currentFocus = this;
                 });
                 input.addEventListener('blur', function() {
-                    // Don't clear immediately - let the next focus happen
                     setTimeout(() => {
                         if (document.activeElement !== this) {
                             currentFocus = null;
                         }
                     }, 100);
                 });
-                // Prevent keydown from bubbling when typing in inputs
                 input.addEventListener('keydown', function(e) {
                     e.stopPropagation();
                 });
@@ -399,17 +393,21 @@
             
             showResponse('Select Ewallet or SAT to begin', 'info');
             
-            // Test connection after page loads
+            // Test connection
             setTimeout(testConnection, 1000);
         });
         
         function updateClock() {
             const now = new Date();
-            document.getElementById('screenTime').textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            document.getElementById('screenTime').textContent = now.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit', 
+                hour12: false 
+            });
         }
         
         function handleKeyboard(e) {
-            // Ignore if typing in an input field (handled by browser)
             if (e.target.tagName === 'INPUT') {
                 return;
             }
@@ -446,13 +444,9 @@
                     }
                 }
             } else {
-                if (currentFocus) {
-                    // Only add if the field is not disabled or readonly
-                    if (!currentFocus.disabled && !currentFocus.readOnly) {
-                        currentFocus.value += key;
-                        // Trigger input event for any listeners
-                        currentFocus.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
+                if (currentFocus && !currentFocus.disabled && !currentFocus.readOnly) {
+                    currentFocus.value += key;
+                    currentFocus.dispatchEvent(new Event('input', { bubbles: true }));
                 }
             }
         }
@@ -493,7 +487,6 @@
         
         function closeModal() {
             document.getElementById('transactionModal').style.display = 'none';
-            // Clear sensitive inputs but keep phone for convenience
             document.getElementById('ewallet_pin').value = '';
             document.getElementById('ewallet_amount').value = '';
             document.getElementById('sat_number').value = '';
@@ -505,7 +498,7 @@
         }
         
         // ============================================================
-        // API CALL FUNCTION - With better error handling
+        // API CALL FUNCTION - REAL API ONLY, NO SIMULATION
         // ============================================================
         async function callAPI(endpoint, data) {
             try {
@@ -523,18 +516,20 @@
                     body: JSON.stringify(data)
                 });
                 
-                // Log response status for debugging
-                console.log(`API Response Status: ${response.status} ${response.statusText}`);
+                console.log(`API Response Status: ${response.status}`);
                 
                 if (!response.ok) {
-                    // Try to get error message from response
                     let errorMsg = `HTTP ${response.status}`;
                     try {
                         const errorData = await response.json();
                         errorMsg = errorData.message || errorData.error || errorMsg;
                     } catch (e) {
-                        // If response is not JSON, use status text
-                        errorMsg = response.statusText || errorMsg;
+                        const text = await response.text();
+                        if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+                            errorMsg = 'Server returned HTML - check PHP error logs';
+                        } else {
+                            errorMsg = response.statusText || errorMsg;
+                        }
                     }
                     throw new Error(errorMsg);
                 }
@@ -549,7 +544,7 @@
         }
         
         // ============================================================
-        // E-WALLET CASOUT - Calls backend/atm/ewallet_cashout.php
+        // EWALLET CASOUT - REAL API ONLY
         // ============================================================
         async function cashoutEwallet() {
             if (isProcessing) return;
@@ -558,7 +553,6 @@
             const pin = document.getElementById('ewallet_pin').value.trim();
             const amount = parseFloat(document.getElementById('ewallet_amount').value);
             
-            // Validation
             if (!phone) { showResponse('❌ Enter phone number', 'error'); return; }
             if (!pin) { showResponse('❌ Enter PIN', 'error'); return; }
             if (!amount || amount < 10) { showResponse('❌ Enter valid amount (min P10)', 'error'); return; }
@@ -567,7 +561,6 @@
             showLoading(true, 'Verifying e-wallet...');
             
             try {
-                // Call the ewallet cashout endpoint - Fix path
                 const result = await callAPI(`${ATM_BASE}/ewallet_cashout.php`, {
                     atm_id: ATM_ID,
                     phone: phone,
@@ -577,17 +570,18 @@
                 
                 showLoading(false);
                 
-                if (result.status === 'APPROVED' || result.success === true) {
+                if (result.status === 'APPROVED' || result.status === 'SUCCESS') {
                     showModal(
                         '💵 CASH DISPENSED',
                         `Ewallet withdrawal successful\nPhone: ${phone}\nRef: ${result.reference || 'N/A'}`,
                         result.amount || amount,
                         '💵'
                     );
-                    showResponse(`✅ Approved! ${result.message || 'Cash dispensed'}`, 'success');
+                    showResponse(`✅ Approved! ${result.message}`, 'success');
                 } else {
                     showResponse(`❌ ${result.message || result.error || 'Transaction declined'}`, 'error');
                 }
+                
             } catch (error) {
                 showLoading(false);
                 showResponse(`❌ Error: ${error.message}`, 'error');
@@ -597,7 +591,7 @@
         }
         
         // ============================================================
-        // SAT AUTHORIZATION - Calls backend/atm/sat_cashout.php
+        // SAT AUTHORIZATION - REAL API ONLY
         // ============================================================
         async function authorizeSAT() {
             if (isProcessing) return;
@@ -606,7 +600,6 @@
             const pin = document.getElementById('sat_pin').value.trim();
             const amount = parseFloat(document.getElementById('sat_amount').value);
             
-            // Validation
             if (!satNumber) { showResponse('❌ Enter SAT number', 'error'); return; }
             if (!pin) { showResponse('❌ Enter SAT PIN', 'error'); return; }
             if (!amount || amount < 10) { showResponse('❌ Enter valid amount', 'error'); return; }
@@ -615,7 +608,6 @@
             showLoading(true, 'Authorizing SAT...');
             
             try {
-                // Call SAT authorization endpoint - Fix path
                 const result = await callAPI(`${ATM_BASE}/sat_cashout.php`, {
                     atm_id: ATM_ID,
                     sat_number: satNumber,
@@ -646,7 +638,7 @@
         }
         
         // ============================================================
-        // SAT COMPLETION (DISPENSE) - Calls backend/atm/sat_complete.php
+        // SAT COMPLETION (DISPENSE) - REAL API ONLY
         // ============================================================
         async function completeSAT() {
             if (isProcessing) return;
@@ -669,7 +661,6 @@
             showLoading(true, '💵 Dispensing cash...');
             
             try {
-                // Call SAT completion/dispense endpoint - Fix path
                 const result = await callAPI(`${ATM_BASE}/sat_complete.php`, {
                     atm_id: ATM_ID,
                     sat_number: satNumber,
@@ -705,12 +696,9 @@
         // ============================================================
         async function testConnection() {
             try {
-                // Try to fetch a simple endpoint that exists
                 const response = await fetch('/backend/db.php', {
                     method: 'HEAD',
-                    headers: {
-                        'X-ATM-ID': ATM_ID
-                    }
+                    headers: { 'X-ATM-ID': ATM_ID }
                 });
                 
                 if (response.ok || response.status === 405) {
@@ -722,58 +710,6 @@
                 showResponse(`⚠️ Cannot connect to backend: ${error.message}`, 'error');
             }
         }
-        
-        // ============================================================
-        // FALLBACK: If API endpoints don't exist, use simulation mode
-        // ============================================================
-        // Check if we're in simulation mode (no real backend)
-        let useSimulation = false;
-        
-        // Override callAPI for simulation if needed
-        const originalCallAPI = callAPI;
-        callAPI = async function(endpoint, data) {
-            try {
-                // Try the real API first
-                return await originalCallAPI(endpoint, data);
-            } catch (error) {
-                // If API fails, use simulation
-                console.log('Using simulation mode due to API error:', error.message);
-                useSimulation = true;
-                
-                // Simulate responses
-                return new Promise((resolve) => {
-                    setTimeout(() => {
-                        if (endpoint.includes('ewallet_cashout')) {
-                            resolve({
-                                status: 'APPROVED',
-                                message: 'Ewallet withdrawal successful (SIMULATION)',
-                                reference: 'SIM-EWT-' + Date.now(),
-                                amount: data.amount
-                            });
-                        } else if (endpoint.includes('sat_cashout')) {
-                            resolve({
-                                status: 'APPROVED',
-                                message: 'SAT authorized (SIMULATION)',
-                                trace_number: 'SIM-TRC-' + Date.now(),
-                                amount: data.amount
-                            });
-                        } else if (endpoint.includes('sat_complete')) {
-                            resolve({
-                                status: 'COMPLETED',
-                                message: 'SAT cash dispensed (SIMULATION)',
-                                reference: 'SIM-SAT-' + Date.now(),
-                                amount: data.amount
-                            });
-                        } else {
-                            resolve({
-                                status: 'SUCCESS',
-                                message: 'Operation successful (SIMULATION)'
-                            });
-                        }
-                    }, 1500);
-                });
-            }
-        };
     </script>
 </body>
 </html>
