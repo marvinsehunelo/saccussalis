@@ -121,11 +121,11 @@ try {
     $stmt->execute([$user_id, $sender_account['account_number'], $recipient_phone, $amount, $fee_amount, $notes]);
     $transaction_id = $stmt->fetchColumn();
 
-    // Generate PIN & store
+    // Generate PIN & store - EXPIRY CHANGED TO 24 HOURS
     $pin = random_int(100000, 999999);
     $stmt = $pdo->prepare("
         INSERT INTO ewallet_pins (transaction_id, recipient_phone, generated_by, pin, is_redeemed, created_at, expires_at, sender_phone, amount)
-        VALUES (?, ?, ?, ?, FALSE, NOW(), NOW() + INTERVAL '15 minutes', ?, ?)
+        VALUES (?, ?, ?, ?, FALSE, NOW(), NOW() + INTERVAL '24 HOURS', ?, ?)
     ");
     $stmt->execute([$transaction_id, $recipient_phone, $user_id, $pin, $sender_phone, $amount]);
 
@@ -135,10 +135,10 @@ try {
     // Send SMS via your own SMS service (not Cazacom DB)
     $sms_sent = false;
     if (function_exists('sendSmsNotification')) {
-        // Send to recipient
-        sendSmsNotification($recipient_phone, "You received P$amount via eWallet from Saccussalis. Use PIN: $pin to withdraw. Valid for 15 minutes.");
-        // Send to sender
-        sendSmsNotification($sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone. Fee: P$fee_amount. Reference: $transaction_id");
+        // Send to recipient - UPDATED SMS MESSAGE
+        sendSmsNotification($recipient_phone, "You received P$amount via eWallet from Saccussalis. Use PIN: $pin to withdraw. Valid for 24 hours.");
+        // Send to sender - UPDATED SMS MESSAGE
+        sendSmsNotification($sender_phone, "You sent P$amount from account {$sender_account['account_number']} to $recipient_phone. Fee: P$fee_amount. Reference: $transaction_id. PIN: $pin (valid for 24 hours)");
         $sms_sent = true;
     } else {
         error_log("SMS notification function not available for transaction $transaction_id");
@@ -149,7 +149,8 @@ try {
         "message" => "eWallet transfer successful" . ($sms_sent ? "" : " (SMS notifications skipped)"),
         "transaction_id" => $transaction_id,
         "recipient_phone" => $recipient_phone,
-        "pin" => $pin
+        "pin" => $pin,
+        "expires_in" => "24 hours" // Added to response
     ]);
 
 } catch (Exception $e) {
