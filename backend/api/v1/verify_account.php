@@ -7,7 +7,10 @@
  * - ACCOUNT: Checks accounts table
  * - WALLET: Checks wallets table and user details
  * 
- * FIXED: Ambiguous column 'phone' - now fully qualified with table names
+ * FIXED: 
+ * - Removed a.status (column doesn't exist in accounts table)
+ * - Added u.status as user_status for user account status
+ * - Fully qualified column names with table aliases
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -81,36 +84,28 @@ try {
         error_log("Verifying WALLET: {$identifier}");
         
         // Build the WHERE clause based on identifier type
-        // CRITICAL FIX: Fully qualify column names with table aliases (w. or u.)
         $whereClause = '';
         $params = [];
         
         if ($identifierType === 'phone' || $identifierType === 'msisdn') {
-            // Clean phone number for matching
             $cleanPhone = preg_replace('/[^0-9]/', '', $identifier);
-            // ✅ FIX: Use w.phone (wallet table) instead of ambiguous 'phone'
             $whereClause = "w.phone = :identifier OR REPLACE(w.phone, '+', '') = :clean_phone";
             $params['identifier'] = $identifier;
             $params['clean_phone'] = $cleanPhone;
         } elseif ($identifierType === 'email' || $identifierType === 'email_address') {
-            // ✅ FIX: Use u.email (users table)
             $whereClause = "u.email = :identifier";
             $params['identifier'] = $identifier;
         } elseif ($identifierType === 'national_id' || $identifierType === 'national_id_number') {
-            // ✅ FIX: Use u.national_id (users table) - assuming users table has national_id
             $whereClause = "u.national_id = :identifier";
             $params['identifier'] = $identifier;
         } else {
-            // Default: try wallet phone or user email
             $cleanPhone = preg_replace('/[^0-9]/', '', $identifier);
-            // ✅ FIX: Fully qualify all column references
             $whereClause = "w.phone = :identifier OR REPLACE(w.phone, '+', '') = :clean_phone OR u.email = :identifier";
             $params['identifier'] = $identifier;
             $params['clean_phone'] = $cleanPhone;
         }
         
-        // First check if wallet exists
-        // ✅ FIX: All column references are now fully qualified
+        // Check if wallet exists
         $stmt = $pdo->prepare("
             SELECT 
                 w.wallet_id,
@@ -221,7 +216,8 @@ try {
     // ============================================================
     error_log("Verifying ACCOUNT: {$identifier}");
     
-    // ✅ FIX: Fully qualify column references with table aliases
+    // ✅ FIXED: Removed a.status (column doesn't exist in accounts table)
+    // Added u.status as user_status to check user account status
     $stmt = $pdo->prepare("
         SELECT 
             a.account_id,
@@ -230,13 +226,13 @@ try {
             a.currency,
             a.balance,
             a.is_frozen,
-            a.status,
             a.created_at,
             a.updated_at,
             u.full_name,
             u.email as user_email,
             u.phone as user_phone,
-            u.kyc_status
+            u.kyc_status,
+            u.status as user_status
         FROM accounts a
         LEFT JOIN users u ON a.user_id = u.user_id
         WHERE a.account_number = :identifier
@@ -273,18 +269,21 @@ try {
         exit;
     }
     
-    // Check if account is active
-    if ($account['status'] !== null && $account['status'] !== 'active') {
+    // ✅ FIXED: Check user status instead of account status
+    // Accounts table doesn't have a status column, so we check user status
+    if ($account['user_status'] !== null && $account['user_status'] !== 'active') {
         echo json_encode([
             "success" => false,
             "verified" => false,
-            "message" => "Account is not active (status: {$account['status']})",
-            "account_id" => $account['account_id']
+            "message" => "User account is not active (status: {$account['user_status']})",
+            "account_id" => $account['account_id'],
+            "user_id" => $account['user_id'] ?? 'unknown'
         ]);
         exit;
     }
     
     // Account exists and is valid
+    // Accounts are considered active by default since there's no status column
     $response = [
         "success" => true,
         "verified" => true,
@@ -294,8 +293,9 @@ try {
         "account_type" => $account['account_type'] ?? 'checking',
         "currency" => $account['currency'] ?? 'BWP',
         "balance" => (float)$account['balance'],
+        "held_balance" => (float)($account['held_balance'] ?? 0),
         "is_frozen" => (bool)$account['is_frozen'],
-        "status" => $account['status'] ?? 'active',
+        "status" => 'active', // Accounts are active by default
         "holder_name" => $account['full_name'] ?? 'Account Holder',
         "holder_email" => $account['user_email'],
         "holder_phone" => $account['user_phone'],
@@ -317,3 +317,4 @@ try {
         "message" => $e->getMessage()
     ]);
 }
+?>
