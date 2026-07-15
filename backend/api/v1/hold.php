@@ -10,12 +10,16 @@
  * UPDATED: Supports both asset types with proper column mapping
  */
 
+// ============================================================
+// USE STATEMENTS MUST BE AT THE TOP
+// ============================================================
+use Infrastructure\Crypto\CertificateManager;
+
 require_once __DIR__ . '/../../db.php';
 
-// Load CertificateManager at the top level, not inside conditionals
+// Load CertificateManager if available
 if (file_exists(__DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php')) {
     require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
-    use Infrastructure\Crypto\CertificateManager;
 }
 
 header("Content-Type: application/json");
