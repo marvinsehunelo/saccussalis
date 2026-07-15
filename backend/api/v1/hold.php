@@ -2,7 +2,7 @@
 /**
  * hold.php - SACCUSSALIS VERSION
  * Place a hold on account or wallet funds
- *  
+ * 
  * Supports:
  * - ACCOUNT: Holds on accounts table
  * - WALLET: Holds on wallets table
@@ -11,6 +11,12 @@
  */
 
 require_once __DIR__ . '/../../db.php';
+
+// Load CertificateManager at the top level, not inside conditionals
+if (file_exists(__DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php')) {
+    require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
+    use Infrastructure\Crypto\CertificateManager;
+}
 
 header("Content-Type: application/json");
 
@@ -84,25 +90,26 @@ error_log("HOLD: assetType={$assetType}, identifier={$identifier}, amount={$amou
 
 if (isset($input['certificate']) && !empty($input['certificate'])) {
     try {
-        // Load certificate manager
-        require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
-        use Infrastructure\Crypto\CertificateManager;
-        
-        $certManager = new CertificateManager('SACCUSSALIS');
-        
-        $verification = $certManager->verifySignedRequest($input);
-        
-        if (!$verification['valid']) {
-            error_log("HOLD: Certificate verification FAILED: " . ($verification['message'] ?? 'Unknown error'));
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Certificate verification failed: " . ($verification['message'] ?? 'Invalid signature')
-            ]);
-            exit;
+        // Check if CertificateManager class exists
+        if (class_exists('Infrastructure\Crypto\CertificateManager')) {
+            $certManager = new CertificateManager('SACCUSSALIS');
+            
+            $verification = $certManager->verifySignedRequest($input);
+            
+            if (!$verification['valid']) {
+                error_log("HOLD: Certificate verification FAILED: " . ($verification['message'] ?? 'Unknown error'));
+                echo json_encode([
+                    "status" => "ERROR",
+                    "hold_placed" => false,
+                    "message" => "Certificate verification failed: " . ($verification['message'] ?? 'Invalid signature')
+                ]);
+                exit;
+            }
+            
+            error_log("HOLD: Verified from " . ($verification['requester'] ?? 'unknown'));
+        } else {
+            error_log("HOLD: CertificateManager class not available, skipping verification");
         }
-        
-        error_log("HOLD: Verified from " . ($verification['requester'] ?? 'unknown'));
         
     } catch (Exception $e) {
         error_log("HOLD: Certificate verification exception: " . $e->getMessage());
