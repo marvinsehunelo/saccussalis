@@ -232,19 +232,20 @@ try {
         
         error_log("ACCOUNT hold placed successfully: hold_id={$holdId}, account_id={$accountId}, reference={$holdReference}");
         
-        echo json_encode([
-            "status" => "SUCCESS",
-            "hold_placed" => true,
-            "hold_reference" => $holdReference,
-            "session_id" => $holdReference,
-            "hold_id" => $holdId,
-            "asset_type" => "ACCOUNT",
-            "account_id" => $accountId,
-            "amount" => $amount,
-            "available_balance" => $availableBalance - $amount,
-            "message" => "Hold placed successfully on ACCOUNT",
-            "requester" => $requester
-        ]);
+        $responsePayload = [
+    "status" => "SUCCESS",
+    "hold_placed" => true,
+    "hold_reference" => $holdReference,
+    "session_id" => $holdReference,
+    "hold_id" => $holdId,
+    "asset_type" => "ACCOUNT",
+    "account_id" => $accountId,
+    "amount" => $amount,
+    "available_balance" => $availableBalance - $amount,
+    "message" => "Hold placed successfully on ACCOUNT",
+    "requester" => $requester
+];
+send_signed_response($responsePayload);
         
     } elseif ($assetType === 'WALLET' || $assetType === 'BANK-WALLET') {
         // ============================================================
