@@ -45,6 +45,11 @@ if (!$isValid) {
 error_log("SACCUSSALIS CREDIT_FUNDS: Request verified from {$requester} using certificate");
 
 // ============================================================
+// EXTRACT HOLD REFERENCE FROM REQUEST
+// ============================================================
+$holdReference = $input['hold_reference'] ?? $input['reference'] ?? $input['hold_ref'] ?? null;
+
+// ============================================================
 // PROCESS CREDIT
 // ============================================================
 
@@ -88,7 +93,7 @@ if ($destinationAssetType === 'ACCOUNT') {
     }
 }
 
-error_log("SACCUSSALIS CREDIT_FUNDS: Asset Type: {$destinationAssetType}, Amount: {$amount}, From: {$fromBank}");
+error_log("SACCUSSALIS CREDIT_FUNDS: Asset Type: {$destinationAssetType}, Amount: {$amount}, From: {$fromBank}, HoldRef: {$holdReference}");
 
 $recipientType = null;
 $recipientId = null;
@@ -444,7 +449,7 @@ try {
     error_log("SACCUSSALIS CREDIT_FUNDS: Credit completed successfully");
 
     // ============================================================
-    // RESPONSE
+    // RESPONSE - ADDED hold_reference and reference fields
     // ============================================================
     $responsePayload = [
         'status' => 'success',
@@ -458,7 +463,15 @@ try {
         'requester' => $requester,
         'signature_verified' => $isValid,
         'verification_method' => 'certificate',
-        'timestamp' => time()
+        'timestamp' => time(),
+        // ============================================================
+        // ADDED: These fields are what VouchMorph is looking for
+        // to confirm the deposit was processed successfully
+        // ============================================================
+        'hold_reference' => $holdReference,
+        'transaction_reference' => $holdReference,
+        'reference' => $holdReference,
+        'message' => 'Funds credited successfully'
     ];
     
     if ($destinationAssetType === 'WALLET' && $pin) {
