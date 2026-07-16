@@ -13,13 +13,9 @@
 // ============================================================
 // FIX: Include crypto.php for send_signed_response()
 // ============================================================
-require_once __DIR__ . '/../../config/db.php';
-require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../../config/db.php';
+require_once __DIR__ . '/../../../helpers/crypto.php';
 
-// Load CertificateManager if available
-if (file_exists(__DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php')) {
-    require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
-}
 
 header("Content-Type: application/json");
 
