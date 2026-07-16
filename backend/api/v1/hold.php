@@ -7,15 +7,14 @@
  * - ACCOUNT: Holds on accounts table
  * - WALLET: Holds on wallets table
  * 
- * UPDATED: Supports both asset types with proper column mapping
+ * UPDATED: Fixed send_signed_response() missing function
  */
 
 // ============================================================
-// USE STATEMENTS MUST BE AT THE TOP
+// FIX: Include crypto.php for send_signed_response()
 // ============================================================
-use Infrastructure\Crypto\CertificateManager;
-
-require_once __DIR__ . '/../../db.php';
+require_once __DIR__ . '/../../config/db.php';
+require_once __DIR__ . '/../../helpers/crypto.php';
 
 // Load CertificateManager if available
 if (file_exists(__DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php')) {
@@ -233,19 +232,19 @@ try {
         error_log("ACCOUNT hold placed successfully: hold_id={$holdId}, account_id={$accountId}, reference={$holdReference}");
         
         $responsePayload = [
-    "status" => "SUCCESS",
-    "hold_placed" => true,
-    "hold_reference" => $holdReference,
-    "session_id" => $holdReference,
-    "hold_id" => $holdId,
-    "asset_type" => "ACCOUNT",
-    "account_id" => $accountId,
-    "amount" => $amount,
-    "available_balance" => $availableBalance - $amount,
-    "message" => "Hold placed successfully on ACCOUNT",
-    "requester" => $requester
-];
-send_signed_response($responsePayload);
+            "status" => "SUCCESS",
+            "hold_placed" => true,
+            "hold_reference" => $holdReference,
+            "session_id" => $holdReference,
+            "hold_id" => $holdId,
+            "asset_type" => "ACCOUNT",
+            "account_id" => $accountId,
+            "amount" => $amount,
+            "available_balance" => $availableBalance - $amount,
+            "message" => "Hold placed successfully on ACCOUNT",
+            "requester" => $requester
+        ];
+        send_signed_response($responsePayload);
         
     } elseif ($assetType === 'WALLET' || $assetType === 'BANK-WALLET') {
         // ============================================================
@@ -362,19 +361,19 @@ send_signed_response($responsePayload);
         error_log("WALLET hold placed successfully: hold_id={$holdId}, wallet_id={$walletId}, reference={$holdReference}");
         
         $responsePayload = [
-    "status" => "SUCCESS",
-    "hold_placed" => true,
-    "hold_reference" => $holdReference,
-    "session_id" => $holdReference,
-    "hold_id" => $holdId,
-    "asset_type" => "WALLET",
-    "wallet_id" => $walletId,
-    "amount" => $amount,
-    "available_balance" => $availableBalance - $amount,
-    "message" => "Hold placed successfully on WALLET",
-    "requester" => $requester
-];
-send_signed_response($responsePayload);
+            "status" => "SUCCESS",
+            "hold_placed" => true,
+            "hold_reference" => $holdReference,
+            "session_id" => $holdReference,
+            "hold_id" => $holdId,
+            "asset_type" => "WALLET",
+            "wallet_id" => $walletId,
+            "amount" => $amount,
+            "available_balance" => $availableBalance - $amount,
+            "message" => "Hold placed successfully on WALLET",
+            "requester" => $requester
+        ];
+        send_signed_response($responsePayload);
         
     } else {
         // Unsupported asset type
