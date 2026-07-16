@@ -361,19 +361,20 @@ send_signed_response($responsePayload);
         
         error_log("WALLET hold placed successfully: hold_id={$holdId}, wallet_id={$walletId}, reference={$holdReference}");
         
-        echo json_encode([
-            "status" => "SUCCESS",
-            "hold_placed" => true,
-            "hold_reference" => $holdReference,
-            "session_id" => $holdReference,
-            "hold_id" => $holdId,
-            "asset_type" => "WALLET",
-            "wallet_id" => $walletId,
-            "amount" => $amount,
-            "available_balance" => $availableBalance - $amount,
-            "message" => "Hold placed successfully on WALLET",
-            "requester" => $requester
-        ]);
+        $responsePayload = [
+    "status" => "SUCCESS",
+    "hold_placed" => true,
+    "hold_reference" => $holdReference,
+    "session_id" => $holdReference,
+    "hold_id" => $holdId,
+    "asset_type" => "WALLET",
+    "wallet_id" => $walletId,
+    "amount" => $amount,
+    "available_balance" => $availableBalance - $amount,
+    "message" => "Hold placed successfully on WALLET",
+    "requester" => $requester
+];
+send_signed_response($responsePayload);
         
     } else {
         // Unsupported asset type
