@@ -14,7 +14,7 @@
 // FIX: Include crypto.php for send_signed_response()
 // ============================================================
 require_once __DIR__ . '/../../db.php';
-require_once __DIR__ . '/../../crypto.php';
+require_once __DIR__ . '/../../../crypto.php';
 
 
 header("Content-Type: application/json");
