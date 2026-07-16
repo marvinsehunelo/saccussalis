@@ -162,6 +162,7 @@ try {
         'credited' => true,
         'amount' => (float)$input['amount'],
         'new_balance' => (float)$newBalance,
+        'transaction_reference' => $transactionReference,  // <-- ADD THIS
         'account_number' => $input['account_number'],
         'deposit_ref' => $input['depositRef'],
         'requester' => $requester,
