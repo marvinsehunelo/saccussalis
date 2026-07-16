@@ -365,20 +365,23 @@ try {
         
         error_log("Looking for wallet with phone: " . $targetPhone);
 
-        // STEP 2: Find wallet
+        // ============================================================
+        // FIX: Removed kyc_level and holder_name columns (they don't exist)
+        // Only use columns that exist in the wallets table
+        // ============================================================
         $stmt = $pdo->prepare("
             SELECT 
                 wallet_id,
+                user_id,
                 phone,
-                balance,
-                status,
                 wallet_type,
                 currency,
+                balance,
+                held_balance,
                 is_frozen,
-                user_id,
+                status,
                 created_at,
-                kyc_level,
-                holder_name
+                updated_at
             FROM wallets 
             WHERE phone = :phone 
             AND status = 'active'
@@ -391,7 +394,19 @@ try {
         if (!$wallet) {
             $phoneWithoutPlus = ltrim($targetPhone, '+');
             $stmt = $pdo->prepare("
-                SELECT * FROM wallets 
+                SELECT 
+                    wallet_id,
+                    user_id,
+                    phone,
+                    wallet_type,
+                    currency,
+                    balance,
+                    held_balance,
+                    is_frozen,
+                    status,
+                    created_at,
+                    updated_at
+                FROM wallets 
                 WHERE phone = :phone 
                 AND status = 'active'
                 AND is_frozen = false
@@ -434,13 +449,18 @@ try {
             exit;
         }
 
-        if ($amount > 0 && $wallet['balance'] < $amount) {
-            error_log("verify_asset: Insufficient funds. Balance: {$wallet['balance']}, Requested: $amount");
+        // Calculate available balance (balance - held_balance)
+        $availableBalance = (float)$wallet['balance'] - (float)($wallet['held_balance'] ?? 0);
+
+        if ($amount > 0 && $availableBalance < $amount) {
+            error_log("verify_asset: Insufficient funds. Available: $availableBalance, Requested: $amount");
             echo json_encode([
                 "success" => false,
                 "verified" => false,
-                "message" => "Insufficient funds. Available: {$wallet['balance']}, Requested: $amount",
-                "balance" => (float)$wallet['balance']
+                "message" => "Insufficient funds. Available: $availableBalance, Requested: $amount",
+                "balance" => (float)$wallet['balance'],
+                "held_balance" => (float)($wallet['held_balance'] ?? 0),
+                "available_balance" => $availableBalance
             ]);
             exit;
         }
@@ -507,25 +527,24 @@ try {
             "verified" => true,
             "asset_id" => $wallet['wallet_id'],
             "asset_type" => $assetType,
-            "available_balance" => (float)$wallet['balance'],
+            "available_balance" => $availableBalance,
             "balance" => (float)$wallet['balance'],
-            "holder_name" => $wallet['holder_name'] ?? "Wallet Holder",
+            "held_balance" => (float)($wallet['held_balance'] ?? 0),
+            "holder_name" => "Wallet Holder",
             "recipient_phone" => $wallet['phone'],
             "currency" => $wallet['currency'] ?? 'BWP',
             "wallet_type" => $wallet['wallet_type'] ?? 'STANDARD',
-            "kyc_level" => $wallet['kyc_level'] ?? 0,
             "auth_method" => $authMethod,
             "pin_verified" => $pinVerified,
             "metadata" => [
                 "wallet_id" => $wallet['wallet_id'],
+                "user_id" => $wallet['user_id'],
                 "wallet_type" => $wallet['wallet_type'] ?? 'STANDARD',
                 "currency" => $wallet['currency'] ?? 'BWP',
                 "phone" => $wallet['phone'],
                 "status" => $wallet['status'],
                 "is_frozen" => $wallet['is_frozen'],
                 "created_at" => $wallet['created_at'],
-                "user_id" => $wallet['user_id'],
-                "kyc_level" => $wallet['kyc_level'] ?? 0,
                 "is_hooked" => $isHooked,
                 "source_reference" => $sourceReference
             ]
