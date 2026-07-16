@@ -54,9 +54,10 @@ if (!$idempotencyKey) {
 
 Idempotency::check($idempotencyKey);
 
-if (!isset($input['depositRef']) || !isset($input['amount']) || !isset($input['account_number'])) {
+$depositRef = $input['reference'] ?? $input['depositRef'] ?? null;
+if (!$depositRef || !isset($input['amount']) || !isset($input['account_number'])) {
     http_response_code(400);
-    echo json_encode(['status' => 'error', 'message' => 'Missing required fields']);
+    echo json_encode(['status' => 'error', 'message' => 'Missing required fields: reference, amount, account_number']);
     exit;
 }
 
@@ -162,7 +163,7 @@ try {
         'credited' => true,
         'amount' => (float)$input['amount'],
         'new_balance' => (float)$newBalance,
-        'transaction_reference' => $transactionReference,  // <-- ADD THIS
+        'transaction_reference' => $reference,  // <-- ADD THIS
         'account_number' => $input['account_number'],
         'deposit_ref' => $input['depositRef'],
         'requester' => $requester,
