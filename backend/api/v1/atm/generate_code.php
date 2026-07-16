@@ -28,7 +28,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
         $amount = floatval($payload['amount'] ?? 0);
         $reference = trim($payload['reference'] ?? '');
         $sourceInstitution = trim($payload['source_institution'] ?? '');
-        $sourceHoldReference = trim($payload['source_hold_reference'] ?? '');
+        $sourceHoldReference = trim($payload['hold_reference'] ?? '');
         $sourceAssetType = trim($payload['source_asset_type'] ?? '');
         $codeHash = trim($payload['code_hash'] ?? '');
         $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
