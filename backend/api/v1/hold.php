@@ -2,23 +2,8 @@
 /**
  * hold.php - SACCUSSALIS VERSION
  * Place, release, and debit holds on account or wallet funds
- *
- * CRITICAL FIX vs previous version:
- * The old version NEVER checked $input['action'] - every request, whether
- * it was PLACE_HOLD, RELEASE_HOLD, or DEBIT, ran the same "place a new
- * hold" logic. RELEASE_HOLD/DEBIT payloads don't include 'amount' or
- * 'asset_type' (they identify the target via 'hold_reference' instead),
- * so they failed the required-fields check and returned an error - with
- * NO error_log() call on that path, so it looked like nothing happened.
- * VOUCHMORPH's SwapService marks its own hold_transactions row RELEASED
- * or DEBITED regardless of whether this endpoint actually did anything,
- * so central records could show a hold as resolved while SACCUSSALIS
- * still has it reserved. This version actually dispatches on $action.
- *
- * Reservation model (unchanged, now correctly honored end-to-end):
- *   - HOLD:    held_balance += amount   (balance untouched, funds reserved)
- *   - RELEASE: held_balance -= amount   (un-reserve, balance untouched)
- *   - DEBIT:   balance -= amount AND held_balance -= amount (funds actually leave)
+ * 
+ * FIXED: Only sets account_id OR wallet_id based on asset_type, never both
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -61,10 +46,6 @@ if (!$isPlaceAction && !$isReleaseAction && !$isDebitAction) {
 
 // ============================================================
 // VALIDATE REQUIRED FIELDS - different per action.
-// PLACE needs amount + asset_type + an identifier to open a new hold.
-// RELEASE/DEBIT act on an EXISTING hold and identify it by
-// hold_reference (falling back to 'reference' for backward
-// compatibility with any caller still using that key).
 // ============================================================
 if ($isPlaceAction) {
     $required = ['action', 'amount', 'asset_type'];
@@ -111,9 +92,7 @@ try {
     }
 
     // ================================================================
-    // RELEASE_HOLD - un-reserve funds against an existing ACTIVE hold.
-    // Looked up purely by hold_reference; asset type/account come from
-    // the financial_holds row itself, not from the caller.
+    // RELEASE_HOLD - un-reserve funds against an existing hold.
     // ================================================================
     if ($isReleaseAction) {
         $pdo->beginTransaction();
@@ -139,16 +118,6 @@ try {
                 exit;
             }
 
-            // ============================================================
-            // FIX: 'HELD' is confirmed legacy terminology for the same
-            // "currently reserved" state as 'ACTIVE' - status vocabulary
-            // check showed HELD (Feb 28-Jul 14) and ACTIVE (Jul 16 on)
-            // never overlap, i.e. one word replaced the other at a
-            // deployment cutover. 'COMMITTED' is NOT included here - its
-            // date range overlapped WITH 'HELD' rather than following it,
-            // meaning it's a different, already-terminal legacy status
-            // (old vocabulary for DEBITED), not a reserved state.
-            // ============================================================
             if (!in_array($hold['status'], ['ACTIVE', 'HELD'], true)) {
                 $pdo->rollBack();
                 error_log("HOLD: RELEASE - hold {$targetHoldReference} is not in a releasable state (status: {$hold['status']})");
@@ -212,9 +181,7 @@ try {
     }
 
     // ================================================================
-    // DEBIT - finalize an existing ACTIVE hold: funds actually leave
-    // the account (balance -= amount) and the reservation clears
-    // (held_balance -= amount).
+    // DEBIT - finalize an existing hold.
     // ================================================================
     if ($isDebitAction) {
         $pdo->beginTransaction();
@@ -240,8 +207,6 @@ try {
                 exit;
             }
 
-            // Same widened check as RELEASE_HOLD above - see comment there
-            // for why HELD is included and COMMITTED deliberately is not.
             if (!in_array($hold['status'], ['ACTIVE', 'HELD'], true)) {
                 $pdo->rollBack();
                 error_log("HOLD: DEBIT - hold {$targetHoldReference} is not in a debitable state (status: {$hold['status']})");
@@ -331,7 +296,7 @@ try {
     }
 
     // ================================================================
-    // PLACE_HOLD (original logic, transactional + duplicate-checked)
+    // PLACE_HOLD - ONLY sets the relevant ID based on asset_type
     // ================================================================
     if (!$identifier) {
         echo json_encode([
@@ -441,11 +406,14 @@ try {
 
             error_log("Account held_balance updated: account_id={$accountId}, amount={$amount}");
 
+            // ============================================================
+            // FIX: For ACCOUNT, set account_id only, wallet_id = NULL
+            // ============================================================
             $stmt = $pdo->prepare("
                 INSERT INTO financial_holds
-                (account_id, amount, hold_reference, session_id, status, expires_at, created_at, asset_type, requester, foreign_bank)
+                (account_id, wallet_id, amount, hold_reference, session_id, status, expires_at, created_at, asset_type, requester, foreign_bank)
                 VALUES
-                (:account_id, :amount, :hold_reference, :session_id, 'ACTIVE', :expires_at, NOW(), 'ACCOUNT', :requester, :foreign_bank)
+                (:account_id, NULL, :amount, :hold_reference, :session_id, 'ACTIVE', :expires_at, NOW(), 'ACCOUNT', :requester, :foreign_bank)
             ");
             $stmt->execute([
                 ':account_id' => $accountId,
@@ -548,11 +516,14 @@ try {
 
             error_log("Wallet held_balance updated: wallet_id={$walletId}, amount={$amount}");
 
+            // ============================================================
+            // FIX: For WALLET, set wallet_id only, account_id = NULL
+            // ============================================================
             $stmt = $pdo->prepare("
                 INSERT INTO financial_holds
-                (wallet_id, amount, hold_reference, session_id, status, expires_at, created_at, asset_type, requester, foreign_bank)
+                (wallet_id, account_id, amount, hold_reference, session_id, status, expires_at, created_at, asset_type, requester, foreign_bank)
                 VALUES
-                (:wallet_id, :amount, :hold_reference, :session_id, 'ACTIVE', :expires_at, NOW(), 'WALLET', :requester, :foreign_bank)
+                (:wallet_id, NULL, :amount, :hold_reference, :session_id, 'ACTIVE', :expires_at, NOW(), 'WALLET', :requester, :foreign_bank)
             ");
             $stmt->execute([
                 ':wallet_id' => $walletId,
