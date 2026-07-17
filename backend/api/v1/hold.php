@@ -139,9 +139,19 @@ try {
                 exit;
             }
 
-            if ($hold['status'] !== 'ACTIVE') {
+            // ============================================================
+            // FIX: 'HELD' is confirmed legacy terminology for the same
+            // "currently reserved" state as 'ACTIVE' - status vocabulary
+            // check showed HELD (Feb 28-Jul 14) and ACTIVE (Jul 16 on)
+            // never overlap, i.e. one word replaced the other at a
+            // deployment cutover. 'COMMITTED' is NOT included here - its
+            // date range overlapped WITH 'HELD' rather than following it,
+            // meaning it's a different, already-terminal legacy status
+            // (old vocabulary for DEBITED), not a reserved state.
+            // ============================================================
+            if (!in_array($hold['status'], ['ACTIVE', 'HELD'], true)) {
                 $pdo->rollBack();
-                error_log("HOLD: RELEASE - hold {$targetHoldReference} is not ACTIVE (status: {$hold['status']})");
+                error_log("HOLD: RELEASE - hold {$targetHoldReference} is not in a releasable state (status: {$hold['status']})");
                 echo json_encode([
                     "status" => "ERROR",
                     "released" => false,
@@ -230,9 +240,11 @@ try {
                 exit;
             }
 
-            if ($hold['status'] !== 'ACTIVE') {
+            // Same widened check as RELEASE_HOLD above - see comment there
+            // for why HELD is included and COMMITTED deliberately is not.
+            if (!in_array($hold['status'], ['ACTIVE', 'HELD'], true)) {
                 $pdo->rollBack();
-                error_log("HOLD: DEBIT - hold {$targetHoldReference} is not ACTIVE (status: {$hold['status']})");
+                error_log("HOLD: DEBIT - hold {$targetHoldReference} is not in a debitable state (status: {$hold['status']})");
                 echo json_encode([
                     "status" => "ERROR",
                     "debited" => false,
