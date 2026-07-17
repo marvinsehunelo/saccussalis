@@ -1,12 +1,24 @@
 <?php
 /**
  * hold.php - SACCUSSALIS VERSION
- * Place a hold on account or wallet funds
+ * Place, release, and debit holds on account or wallet funds
  *
- * FIXED: held_balance update + financial_holds insert now run in a single
- * DB transaction. Previously the UPDATE committed immediately and only the
- * INSERT could fail (e.g. duplicate hold_reference), leaving held_balance
- * permanently inflated with no corresponding hold row and no way to release it.
+ * CRITICAL FIX vs previous version:
+ * The old version NEVER checked $input['action'] - every request, whether
+ * it was PLACE_HOLD, RELEASE_HOLD, or DEBIT, ran the same "place a new
+ * hold" logic. RELEASE_HOLD/DEBIT payloads don't include 'amount' or
+ * 'asset_type' (they identify the target via 'hold_reference' instead),
+ * so they failed the required-fields check and returned an error - with
+ * NO error_log() call on that path, so it looked like nothing happened.
+ * VOUCHMORPH's SwapService marks its own hold_transactions row RELEASED
+ * or DEBITED regardless of whether this endpoint actually did anything,
+ * so central records could show a hold as resolved while SACCUSSALIS
+ * still has it reserved. This version actually dispatches on $action.
+ *
+ * Reservation model (unchanged, now correctly honored end-to-end):
+ *   - HOLD:    held_balance += amount   (balance untouched, funds reserved)
+ *   - RELEASE: held_balance -= amount   (un-reserve, balance untouched)
+ *   - DEBIT:   balance -= amount AND held_balance -= amount (funds actually leave)
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -32,20 +44,52 @@ if (empty($input)) {
 
 error_log("HOLD: Input received: " . json_encode($input));
 
-$required = ['action', 'amount', 'asset_type'];
-foreach ($required as $field) {
-    if (empty($input[$field])) {
+$action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
+$isPlaceAction = in_array($action, ['HOLD', 'PLACE', 'PLACE_HOLD']);
+$isReleaseAction = in_array($action, ['RELEASE', 'RELEASE_HOLD', 'UNHOLD']);
+$isDebitAction = in_array($action, ['DEBIT', 'DEBIT_HOLD', 'DEBIT_FUNDS']);
+
+if (!$isPlaceAction && !$isReleaseAction && !$isDebitAction) {
+    error_log("HOLD: Unsupported action: {$action}");
+    echo json_encode([
+        "status" => "ERROR",
+        "hold_placed" => false,
+        "message" => "Unsupported action: {$action}"
+    ]);
+    exit;
+}
+
+// ============================================================
+// VALIDATE REQUIRED FIELDS - different per action.
+// PLACE needs amount + asset_type + an identifier to open a new hold.
+// RELEASE/DEBIT act on an EXISTING hold and identify it by
+// hold_reference (falling back to 'reference' for backward
+// compatibility with any caller still using that key).
+// ============================================================
+if ($isPlaceAction) {
+    $required = ['action', 'amount', 'asset_type'];
+    foreach ($required as $field) {
+        if (empty($input[$field])) {
+            echo json_encode([
+                "status" => "ERROR",
+                "hold_placed" => false,
+                "message" => "Missing required field: {$field}"
+            ]);
+            exit;
+        }
+    }
+} else {
+    $targetHoldReference = $input['hold_reference'] ?? $input['reference'] ?? null;
+    if (empty($targetHoldReference)) {
         echo json_encode([
             "status" => "ERROR",
-            "hold_placed" => false,
-            "message" => "Missing required field: {$field}"
+            "message" => "Missing required field: hold_reference"
         ]);
         exit;
     }
 }
 
-$action = $input['action'];
-$amount = (float)$input['amount'];
+$amount = (float)($input['amount'] ?? 0);
 $assetType = strtoupper($input['asset_type'] ?? 'ACCOUNT');
 $holdReason = $input['hold_reason'] ?? 'PENDING_SWAP';
 $holdReference = $input['reference'] ?? 'HOLD_' . uniqid();
@@ -61,52 +105,256 @@ $identifier = $input['source_identifier'] ??
               $input['national_id'] ??
               null;
 
-if (!$identifier) {
-    echo json_encode([
-        "status" => "ERROR",
-        "hold_placed" => false,
-        "message" => "No identifier provided. Required: source_identifier, phone, account_number, or wallet_phone"
-    ]);
-    exit;
-}
-
-error_log("HOLD: assetType={$assetType}, identifier={$identifier}, amount={$amount}, action={$action}");
-
-if (isset($input['certificate']) && !empty($input['certificate'])) {
-    try {
-        if (class_exists('Infrastructure\Crypto\CertificateManager')) {
-            $certManager = new CertificateManager('SACCUSSALIS');
-            $verification = $certManager->verifySignedRequest($input);
-
-            if (!$verification['valid']) {
-                error_log("HOLD: Certificate verification FAILED: " . ($verification['message'] ?? 'Unknown error'));
-                echo json_encode([
-                    "status" => "ERROR",
-                    "hold_placed" => false,
-                    "message" => "Certificate verification failed: " . ($verification['message'] ?? 'Invalid signature')
-                ]);
-                exit;
-            }
-
-            error_log("HOLD: Verified from " . ($verification['requester'] ?? 'unknown'));
-        } else {
-            error_log("HOLD: CertificateManager class not available, skipping verification");
-        }
-    } catch (Exception $e) {
-        error_log("HOLD: Certificate verification exception: " . $e->getMessage());
-    }
-}
-
 try {
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Database connection failed");
     }
 
-    // ============================================================
-    // NEW: fail fast on a duplicate hold_reference BEFORE touching
-    // any balance. Avoids ever reaching the transaction with a
-    // reference we already know will violate the unique constraint.
-    // ============================================================
+    // ================================================================
+    // RELEASE_HOLD - un-reserve funds against an existing ACTIVE hold.
+    // Looked up purely by hold_reference; asset type/account come from
+    // the financial_holds row itself, not from the caller.
+    // ================================================================
+    if ($isReleaseAction) {
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare("
+                SELECT id, account_id, wallet_id, amount, asset_type, status
+                FROM financial_holds
+                WHERE hold_reference = :ref
+                LIMIT 1
+                FOR UPDATE
+            ");
+            $stmt->execute([':ref' => $targetHoldReference]);
+            $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$hold) {
+                $pdo->rollBack();
+                error_log("HOLD: RELEASE - no hold found for reference {$targetHoldReference}");
+                echo json_encode([
+                    "status" => "ERROR",
+                    "released" => false,
+                    "message" => "No hold found for reference: {$targetHoldReference}"
+                ]);
+                exit;
+            }
+
+            if ($hold['status'] !== 'ACTIVE') {
+                $pdo->rollBack();
+                error_log("HOLD: RELEASE - hold {$targetHoldReference} is not ACTIVE (status: {$hold['status']})");
+                echo json_encode([
+                    "status" => "ERROR",
+                    "released" => false,
+                    "message" => "Hold is not active (status: {$hold['status']})"
+                ]);
+                exit;
+            }
+
+            $holdAmount = (float)$hold['amount'];
+
+            if ($hold['asset_type'] === 'ACCOUNT' && $hold['account_id']) {
+                $stmt = $pdo->prepare("
+                    UPDATE accounts
+                    SET held_balance = GREATEST(0, COALESCE(held_balance, 0) - :amount)
+                    WHERE account_id = :account_id
+                ");
+                $stmt->execute([':amount' => $holdAmount, ':account_id' => $hold['account_id']]);
+            } elseif ($hold['asset_type'] === 'WALLET' && $hold['wallet_id']) {
+                $stmt = $pdo->prepare("
+                    UPDATE wallets
+                    SET held_balance = GREATEST(0, COALESCE(held_balance, 0) - :amount)
+                    WHERE wallet_id = :wallet_id
+                ");
+                $stmt->execute([':amount' => $holdAmount, ':wallet_id' => $hold['wallet_id']]);
+            } else {
+                $pdo->rollBack();
+                throw new Exception("Hold {$targetHoldReference} has no valid account_id/wallet_id to release against");
+            }
+
+            $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'RELEASED' WHERE id = :id");
+            $stmt->execute([':id' => $hold['id']]);
+
+            $pdo->commit();
+
+            error_log("HOLD: RELEASED hold_reference={$targetHoldReference}, amount={$holdAmount}");
+
+            $responsePayload = [
+                "status" => "SUCCESS",
+                "released" => true,
+                "hold_placed" => false,
+                "hold_reference" => $targetHoldReference,
+                "amount" => $holdAmount,
+                "asset_type" => $hold['asset_type'],
+                "message" => "Hold released successfully"
+            ];
+            send_signed_response($responsePayload);
+
+        } catch (PDOException $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log("HOLD: RELEASE PDO ERROR: " . $e->getMessage());
+            echo json_encode([
+                "status" => "ERROR",
+                "released" => false,
+                "message" => "Database error: " . $e->getMessage()
+            ]);
+        }
+        exit;
+    }
+
+    // ================================================================
+    // DEBIT - finalize an existing ACTIVE hold: funds actually leave
+    // the account (balance -= amount) and the reservation clears
+    // (held_balance -= amount).
+    // ================================================================
+    if ($isDebitAction) {
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare("
+                SELECT id, account_id, wallet_id, amount, asset_type, status
+                FROM financial_holds
+                WHERE hold_reference = :ref
+                LIMIT 1
+                FOR UPDATE
+            ");
+            $stmt->execute([':ref' => $targetHoldReference]);
+            $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$hold) {
+                $pdo->rollBack();
+                error_log("HOLD: DEBIT - no hold found for reference {$targetHoldReference}");
+                echo json_encode([
+                    "status" => "ERROR",
+                    "debited" => false,
+                    "message" => "No hold found for reference: {$targetHoldReference}"
+                ]);
+                exit;
+            }
+
+            if ($hold['status'] !== 'ACTIVE') {
+                $pdo->rollBack();
+                error_log("HOLD: DEBIT - hold {$targetHoldReference} is not ACTIVE (status: {$hold['status']})");
+                echo json_encode([
+                    "status" => "ERROR",
+                    "debited" => false,
+                    "message" => "Hold is not active (status: {$hold['status']})"
+                ]);
+                exit;
+            }
+
+            $holdAmount = (float)$hold['amount'];
+
+            if ($hold['asset_type'] === 'ACCOUNT' && $hold['account_id']) {
+                $stmt = $pdo->prepare("
+                    UPDATE accounts
+                    SET balance = balance - :amount,
+                        held_balance = GREATEST(0, COALESCE(held_balance, 0) - :amount2)
+                    WHERE account_id = :account_id
+                    AND balance >= :amount3
+                    RETURNING balance
+                ");
+                $stmt->execute([
+                    ':amount' => $holdAmount,
+                    ':amount2' => $holdAmount,
+                    ':amount3' => $holdAmount,
+                    ':account_id' => $hold['account_id']
+                ]);
+                $updated = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$updated) {
+                    $pdo->rollBack();
+                    throw new Exception("Insufficient balance to debit account {$hold['account_id']}");
+                }
+            } elseif ($hold['asset_type'] === 'WALLET' && $hold['wallet_id']) {
+                $stmt = $pdo->prepare("
+                    UPDATE wallets
+                    SET balance = balance - :amount,
+                        held_balance = GREATEST(0, COALESCE(held_balance, 0) - :amount2)
+                    WHERE wallet_id = :wallet_id
+                    AND balance >= :amount3
+                    RETURNING balance
+                ");
+                $stmt->execute([
+                    ':amount' => $holdAmount,
+                    ':amount2' => $holdAmount,
+                    ':amount3' => $holdAmount,
+                    ':wallet_id' => $hold['wallet_id']
+                ]);
+                $updated = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$updated) {
+                    $pdo->rollBack();
+                    throw new Exception("Insufficient balance to debit wallet {$hold['wallet_id']}");
+                }
+            } else {
+                $pdo->rollBack();
+                throw new Exception("Hold {$targetHoldReference} has no valid account_id/wallet_id to debit against");
+            }
+
+            $stmt = $pdo->prepare("UPDATE financial_holds SET status = 'DEBITED' WHERE id = :id");
+            $stmt->execute([':id' => $hold['id']]);
+
+            $pdo->commit();
+
+            error_log("HOLD: DEBITED hold_reference={$targetHoldReference}, amount={$holdAmount}");
+
+            $responsePayload = [
+                "status" => "SUCCESS",
+                "debited" => true,
+                "hold_reference" => $targetHoldReference,
+                "amount" => $holdAmount,
+                "asset_type" => $hold['asset_type'],
+                "total_balance" => floatval($updated['balance']),
+                "message" => "Hold debited successfully"
+            ];
+            send_signed_response($responsePayload);
+
+        } catch (PDOException $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log("HOLD: DEBIT PDO ERROR: " . $e->getMessage());
+            echo json_encode([
+                "status" => "ERROR",
+                "debited" => false,
+                "message" => "Database error: " . $e->getMessage()
+            ]);
+        }
+        exit;
+    }
+
+    // ================================================================
+    // PLACE_HOLD (original logic, transactional + duplicate-checked)
+    // ================================================================
+    if (!$identifier) {
+        echo json_encode([
+            "status" => "ERROR",
+            "hold_placed" => false,
+            "message" => "No identifier provided. Required: source_identifier, phone, account_number, or wallet_phone"
+        ]);
+        exit;
+    }
+
+    error_log("HOLD: assetType={$assetType}, identifier={$identifier}, amount={$amount}, action={$action}");
+
+    if (isset($input['certificate']) && !empty($input['certificate'])) {
+        try {
+            if (class_exists('Infrastructure\Crypto\CertificateManager')) {
+                $certManager = new CertificateManager('SACCUSSALIS');
+                $verification = $certManager->verifySignedRequest($input);
+                if (!$verification['valid']) {
+                    error_log("HOLD: Certificate verification FAILED: " . ($verification['message'] ?? 'Unknown error'));
+                    echo json_encode([
+                        "status" => "ERROR",
+                        "hold_placed" => false,
+                        "message" => "Certificate verification failed: " . ($verification['message'] ?? 'Invalid signature')
+                    ]);
+                    exit;
+                }
+                error_log("HOLD: Verified from " . ($verification['requester'] ?? 'unknown'));
+            } else {
+                error_log("HOLD: CertificateManager class not available, skipping verification");
+            }
+        } catch (Exception $e) {
+            error_log("HOLD: Certificate verification exception: " . $e->getMessage());
+        }
+    }
+
     $dupCheck = $pdo->prepare("SELECT 1 FROM financial_holds WHERE hold_reference = :ref LIMIT 1");
     $dupCheck->execute([':ref' => $holdReference]);
     if ($dupCheck->fetchColumn()) {
@@ -157,11 +405,7 @@ try {
         error_log("Account found: ID={$accountId}, Balance={$balance}, Held={$heldBalance}, Available={$availableBalance}");
 
         if (!empty($account['is_frozen']) && $account['is_frozen'] == true) {
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Account is frozen"
-            ]);
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Account is frozen"]);
             exit;
         }
 
@@ -174,12 +418,6 @@ try {
             exit;
         }
 
-        // ============================================================
-        // FIX: single atomic transaction for balance update + hold insert.
-        // If the INSERT fails for any reason (duplicate reference, DB
-        // error, etc.), the UPDATE is rolled back too — held_balance
-        // can never be bumped without a matching financial_holds row.
-        // ============================================================
         $pdo->beginTransaction();
         try {
             $stmt = $pdo->prepare("
@@ -187,10 +425,7 @@ try {
                 SET held_balance = COALESCE(held_balance, 0) + :amount
                 WHERE account_id = :account_id
             ");
-            $stmt->execute([
-                ':amount' => $amount,
-                ':account_id' => $accountId
-            ]);
+            $stmt->execute([':amount' => $amount, ':account_id' => $accountId]);
 
             error_log("Account held_balance updated: account_id={$accountId}, amount={$amount}");
 
@@ -211,19 +446,14 @@ try {
             ]);
 
             $holdId = $pdo->lastInsertId();
-
             $pdo->commit();
 
             error_log("ACCOUNT hold placed successfully: hold_id={$holdId}, account_id={$accountId}, reference={$holdReference}");
 
         } catch (PDOException $e) {
             $pdo->rollBack();
-            error_log("HOLD: Transaction rolled back for account_id={$accountId}, reference={$holdReference}: " . $e->getMessage());
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Database error: " . $e->getMessage()
-            ]);
+            error_log("HOLD: PLACE transaction rolled back for account_id={$accountId}, reference={$holdReference}: " . $e->getMessage());
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Database error: " . $e->getMessage()]);
             exit;
         }
 
@@ -265,11 +495,7 @@ try {
 
         if (!$wallet) {
             error_log("HOLD: Wallet not found: {$identifier}");
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Wallet not found: {$identifier}"
-            ]);
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Wallet not found: {$identifier}"]);
             exit;
         }
 
@@ -281,20 +507,12 @@ try {
         error_log("Wallet found: ID={$walletId}, Balance={$balance}, Held={$heldBalance}, Available={$availableBalance}");
 
         if (!empty($wallet['is_frozen']) && $wallet['is_frozen'] == true) {
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Wallet is frozen"
-            ]);
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Wallet is frozen"]);
             exit;
         }
 
         if (isset($wallet['status']) && $wallet['status'] !== 'active') {
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Wallet is not active (status: {$wallet['status']})"
-            ]);
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Wallet is not active (status: {$wallet['status']})"]);
             exit;
         }
 
@@ -307,9 +525,6 @@ try {
             exit;
         }
 
-        // ============================================================
-        // FIX: same atomic transaction pattern as the ACCOUNT branch.
-        // ============================================================
         $pdo->beginTransaction();
         try {
             $stmt = $pdo->prepare("
@@ -317,10 +532,7 @@ try {
                 SET held_balance = COALESCE(held_balance, 0) + :amount
                 WHERE wallet_id = :wallet_id
             ");
-            $stmt->execute([
-                ':amount' => $amount,
-                ':wallet_id' => $walletId
-            ]);
+            $stmt->execute([':amount' => $amount, ':wallet_id' => $walletId]);
 
             error_log("Wallet held_balance updated: wallet_id={$walletId}, amount={$amount}");
 
@@ -341,19 +553,14 @@ try {
             ]);
 
             $holdId = $pdo->lastInsertId();
-
             $pdo->commit();
 
             error_log("WALLET hold placed successfully: hold_id={$holdId}, wallet_id={$walletId}, reference={$holdReference}");
 
         } catch (PDOException $e) {
             $pdo->rollBack();
-            error_log("HOLD: Transaction rolled back for wallet_id={$walletId}, reference={$holdReference}: " . $e->getMessage());
-            echo json_encode([
-                "status" => "ERROR",
-                "hold_placed" => false,
-                "message" => "Database error: " . $e->getMessage()
-            ]);
+            error_log("HOLD: PLACE transaction rolled back for wallet_id={$walletId}, reference={$holdReference}: " . $e->getMessage());
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Database error: " . $e->getMessage()]);
             exit;
         }
 
@@ -382,25 +589,14 @@ try {
     }
 
 } catch (PDOException $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
+    if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
     error_log("Hold.php PDO ERROR: " . $e->getMessage());
     error_log("Hold.php TRACE: " . $e->getTraceAsString());
-    echo json_encode([
-        "status" => "ERROR",
-        "hold_placed" => false,
-        "message" => "Database error: " . $e->getMessage()
-    ]);
+    echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Database error: " . $e->getMessage()]);
 } catch (Exception $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
+    if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
     error_log("Hold.php ERROR: " . $e->getMessage());
     error_log("Hold.php TRACE: " . $e->getTraceAsString());
-    echo json_encode([
-        "status" => "ERROR",
-        "hold_placed" => false,
-        "message" => $e->getMessage()
-    ]);
+    echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => $e->getMessage()]);
 }
+?>
