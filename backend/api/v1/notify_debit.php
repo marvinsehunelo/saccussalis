@@ -70,7 +70,7 @@ try {
     // Get hold record with proper locking
     $stmt = $pdo->prepare("
         SELECT * FROM financial_holds 
-        WHERE hold_reference = ? AND status = 'HELD'
+        WHERE hold_reference = ? AND status = 'ACTIVE'
         FOR UPDATE
     ");
     $stmt->execute([$holdReference]);
