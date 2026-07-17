@@ -67,7 +67,7 @@ try {
 
     $pdo->beginTransaction();
 
-    // Get hold record with proper locking
+    // Get hold record with proper locking - check status = 'ACTIVE'
     $stmt = $pdo->prepare("
         SELECT * FROM financial_holds 
         WHERE hold_reference = ? AND status = 'ACTIVE'
@@ -88,51 +88,9 @@ try {
     $assetType = strtoupper($hold['asset_type'] ?? 'WALLET');
 
     // ============================================================
-    // BRANCH: WALLET OR ACCOUNT DEBIT
+    // BRANCH: CHECK ASSET_TYPE FIRST - NOT wallet_id/account_id
     // ============================================================
-    if (!empty($hold['wallet_id'])) {
-        // ============================================================
-        // WALLET DEBIT PATH
-        // ============================================================
-        error_log("SACCUSSALIS NOTIFY_DEBIT: Processing WALLET debit for wallet_id={$hold['wallet_id']}");
-        
-        $stmt = $pdo->prepare("
-            SELECT phone, user_id, balance, held_balance 
-            FROM wallets 
-            WHERE wallet_id = ? 
-            FOR UPDATE
-        ");
-        $stmt->execute([$hold['wallet_id']]);
-        $walletRow = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$walletRow) {
-            throw new Exception("Wallet not found: {$hold['wallet_id']}");
-        }
-        
-        $hold = array_merge($hold, $walletRow);
-
-        // Update wallet balance and held_balance
-        $stmt = $pdo->prepare("
-            UPDATE wallets 
-            SET balance = balance - ?,
-                held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0)
-            WHERE wallet_id = ?
-        ");
-        $stmt->execute([$debitAmount, $debitAmount, $hold['wallet_id']]);
-
-        // Get updated wallet balance
-        $stmt = $pdo->prepare("
-            SELECT balance, held_balance 
-            FROM wallets 
-            WHERE wallet_id = ?
-        ");
-        $stmt->execute([$hold['wallet_id']]);
-        $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        $assetId = $hold['wallet_id'];
-        $assetType = 'WALLET';
-
-    } elseif (!empty($hold['account_id'])) {
+    if ($assetType === 'ACCOUNT' && !empty($hold['account_id'])) {
         // ============================================================
         // ACCOUNT DEBIT PATH
         // ============================================================
@@ -169,13 +127,55 @@ try {
             WHERE account_id = ?
         ");
         $stmt->execute([$hold['account_id']]);
-        $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
+        $updatedAsset = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $assetId = $hold['account_id'];
         $assetType = 'ACCOUNT';
 
+    } elseif ($assetType === 'WALLET' && !empty($hold['wallet_id'])) {
+        // ============================================================
+        // WALLET DEBIT PATH
+        // ============================================================
+        error_log("SACCUSSALIS NOTIFY_DEBIT: Processing WALLET debit for wallet_id={$hold['wallet_id']}");
+        
+        $stmt = $pdo->prepare("
+            SELECT phone, user_id, balance, held_balance 
+            FROM wallets 
+            WHERE wallet_id = ? 
+            FOR UPDATE
+        ");
+        $stmt->execute([$hold['wallet_id']]);
+        $walletRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$walletRow) {
+            throw new Exception("Wallet not found: {$hold['wallet_id']}");
+        }
+        
+        $hold = array_merge($hold, $walletRow);
+
+        // Update wallet balance and held_balance
+        $stmt = $pdo->prepare("
+            UPDATE wallets 
+            SET balance = balance - ?,
+                held_balance = GREATEST(COALESCE(held_balance,0) - ?, 0)
+            WHERE wallet_id = ?
+        ");
+        $stmt->execute([$debitAmount, $debitAmount, $hold['wallet_id']]);
+
+        // Get updated wallet balance
+        $stmt = $pdo->prepare("
+            SELECT balance, held_balance 
+            FROM wallets 
+            WHERE wallet_id = ?
+        ");
+        $stmt->execute([$hold['wallet_id']]);
+        $updatedAsset = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $assetId = $hold['wallet_id'];
+        $assetType = 'WALLET';
+
     } else {
-        throw new Exception("Hold {$holdReference} has neither wallet_id nor account_id set");
+        throw new Exception("Hold {$holdReference} has invalid asset_type or missing ID. asset_type: {$assetType}, account_id: {$hold['account_id']}, wallet_id: {$hold['wallet_id']}");
     }
 
     // ============================================================
@@ -215,7 +215,7 @@ try {
     error_log("SACCUSSALIS NOTIFY_DEBIT: Settlement account {$settlementAccount} new balance: {$settlement['balance']}");
 
     // ============================================================
-    // CREATE SETTLEMENT RECORD - USING CORRECT COLUMNS
+    // CREATE SETTLEMENT RECORD - ONLY COLUMNS THAT EXIST
     // ============================================================
     $stmt = $pdo->prepare("
         INSERT INTO settlements 
@@ -234,7 +234,7 @@ try {
     error_log("SACCUSSALIS NOTIFY_DEBIT: Settlement record created ID={$settlementId}");
 
     // ============================================================
-    // CREATE LEDGER ENTRY - USING CORRECT COLUMNS
+    // CREATE LEDGER ENTRY - ONLY COLUMNS THAT EXIST
     // ============================================================
     $debitAccount = $assetType . ':' . $assetId;
     $creditAccount = 'ACCOUNT:' . $settlementAccount;
@@ -260,7 +260,7 @@ try {
     // ============================================================
     // SEND SIGNED RESPONSE WITH CERTIFICATE
     // ============================================================
-    $availableBalance = (float)($updatedWallet['balance'] ?? 0) - (float)($updatedWallet['held_balance'] ?? 0);
+    $availableBalance = (float)($updatedAsset['balance'] ?? 0) - (float)($updatedAsset['held_balance'] ?? 0);
     
     $responsePayload = [
         'status' => 'SUCCESS',
@@ -270,8 +270,8 @@ try {
         'amount' => $debitAmount,
         'asset_type' => $assetType,
         'asset_id' => $assetId,
-        'new_balance' => (float)($updatedWallet['balance'] ?? 0),
-        'held_balance' => (float)($updatedWallet['held_balance'] ?? 0),
+        'new_balance' => (float)($updatedAsset['balance'] ?? 0),
+        'held_balance' => (float)($updatedAsset['held_balance'] ?? 0),
         'available_balance' => $availableBalance,
         'message' => "Funds debited from {$assetType} and settled successfully",
         'requester' => $requester,
@@ -296,3 +296,4 @@ try {
         'timestamp' => time()
     ]);
 }
+?>
