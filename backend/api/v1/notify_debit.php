@@ -70,7 +70,7 @@ try {
     // Get hold record with proper locking
     $stmt = $pdo->prepare("
         SELECT * FROM financial_holds 
-        WHERE hold_reference = ? AND status = 'ACTIVE'
+        WHERE hold_reference = ? AND status = 'HELD'
         FOR UPDATE
     ");
     $stmt->execute([$holdReference]);
@@ -169,7 +169,7 @@ try {
             WHERE account_id = ?
         ");
         $stmt->execute([$hold['account_id']]);
-        $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC); // reuse variable name for response block
+        $updatedWallet = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $assetId = $hold['account_id'];
         $assetType = 'ACCOUNT';
@@ -179,15 +179,14 @@ try {
     }
 
     // ============================================================
-    // UPDATE HOLD STATUS TO COMMITTED
+    // UPDATE HOLD STATUS TO DEBITED - USING ONLY EXISTING COLUMNS
     // ============================================================
     $stmt = $pdo->prepare("
         UPDATE financial_holds 
-        SET status = 'COMMITTED', 
+        SET status = 'DEBITED', 
             cashout_confirmed = TRUE,
             debited_by = :requester,
-            debit_signature_verified = :sig_verified,
-            updated_at = NOW()
+            signature_verified = :sig_verified
         WHERE id = :id
     ");
     $stmt->execute([
@@ -199,7 +198,7 @@ try {
     // ============================================================
     // CREDIT THE SETTLEMENT ACCOUNT
     // ============================================================
-    $settlementAccount = '10000001';
+    $settlementAccount = '11111111';
     $stmt = $pdo->prepare("
         UPDATE accounts 
         SET balance = balance + ? 
@@ -227,7 +226,6 @@ try {
         RETURNING settlement_id
     ");
     
-    // Use wallet_id or account_id based on what we have
     $walletId = !empty($hold['wallet_id']) ? $hold['wallet_id'] : null;
     $accountId = !empty($hold['account_id']) ? $hold['account_id'] : null;
     
