@@ -179,7 +179,7 @@ try {
     }
 
     // ============================================================
-    // UPDATE HOLD STATUS TO DEBITED - USING ONLY EXISTING COLUMNS
+    // UPDATE HOLD STATUS TO DEBITED
     // ============================================================
     $stmt = $pdo->prepare("
         UPDATE financial_holds 
@@ -215,51 +215,41 @@ try {
     error_log("SACCUSSALIS NOTIFY_DEBIT: Settlement account {$settlementAccount} new balance: {$settlement['balance']}");
 
     // ============================================================
-    // CREATE SETTLEMENT RECORD
+    // CREATE SETTLEMENT RECORD - USING CORRECT COLUMNS
     // ============================================================
     $stmt = $pdo->prepare("
         INSERT INTO settlements 
-            (settlement_ref, type, wallet_id, account_id, amount, issuer_bank, status, 
-             requester, signature_verified, asset_type, created_at)
+            (settlement_ref, type, amount, issuer_bank, status, created_at)
         VALUES 
-            (?, 'HOLD_SETTLEMENT', ?, ?, ?, ?, 'completed', ?, ?, ?, NOW())
+            (?, 'HOLD_SETTLEMENT', ?, ?, 'completed', NOW())
         RETURNING settlement_id
     ");
     
-    $walletId = !empty($hold['wallet_id']) ? $hold['wallet_id'] : null;
-    $accountId = !empty($hold['account_id']) ? $hold['account_id'] : null;
-    
     $stmt->execute([
         $transactionReference,
-        $walletId,
-        $accountId,
         $debitAmount,
-        $fromBank,
-        $requester,
-        $isValid ? 1 : 0,
-        $assetType
+        $fromBank
     ]);
     $settlementId = $stmt->fetchColumn();
     error_log("SACCUSSALIS NOTIFY_DEBIT: Settlement record created ID={$settlementId}");
 
     // ============================================================
-    // CREATE LEDGER ENTRY
+    // CREATE LEDGER ENTRY - USING CORRECT COLUMNS
     // ============================================================
     $debitAccount = $assetType . ':' . $assetId;
     $creditAccount = 'ACCOUNT:' . $settlementAccount;
     
     $stmt = $pdo->prepare("
         INSERT INTO ledger_entries 
-            (reference, debit_account, credit_account, amount, currency, notes, requester, created_at)
+            (reference, debit_account, credit_account, amount, currency, notes, created_at)
         VALUES 
-            (?, ?, ?, ?, 'BWP', 'Hold settlement', ?, NOW())
+            (?, ?, ?, ?, 'BWP', 'Hold settlement', NOW())
     ");
     $stmt->execute([
         $transactionReference,
         $debitAccount,
         $creditAccount,
-        $debitAmount,
-        $requester
+        $debitAmount
     ]);
 
     $pdo->commit();
