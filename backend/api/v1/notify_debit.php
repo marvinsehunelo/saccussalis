@@ -198,7 +198,7 @@ try {
     // ============================================================
     // CREDIT THE SETTLEMENT ACCOUNT
     // ============================================================
-    $settlementAccount = '11111111';
+    $settlementAccount = '111111111';
     $stmt = $pdo->prepare("
         UPDATE accounts 
         SET balance = balance + ? 
