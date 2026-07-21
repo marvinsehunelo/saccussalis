@@ -225,11 +225,12 @@ class ATMCashout {
      * Create transaction record
      */
     private function createTransactionRecord(string $satNumber, float $amount, string $atmId): void {
+        // Use user_id = 1 (system admin) since user_id is required
         $stmt = $this->pdo->prepare("
             INSERT INTO transactions 
             (user_id, from_account, to_account, type, amount, description, status, created_at)
             VALUES 
-            (NULL, :from_account, :to_account, 'atm_cashout', :amount, :desc, 'completed', NOW())
+            (1, :from_account, :to_account, 'atm_cashout', :amount, :desc, 'completed', NOW())
         ");
         $stmt->execute([
             ':from_account' => 'SAT:' . $satNumber,
