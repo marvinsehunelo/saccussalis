@@ -169,6 +169,9 @@ class ATMCashout {
      * expires_at, status, processing, created_at, used_at, attempts, max_attempts, 
      * last_attempt_at, sat_number, pin, code_hash, requester, 
      * signature_verified, verification_method, updated_at
+     * 
+     * FIX: Uses LOWER(status) to handle case-insensitive status matching
+     * (ACTIVE, active, Active all match)
      */
     private function validateSAT(string $satNumber, string $pin, float $amount): array {
         $stmt = $this->pdo->prepare("
@@ -179,7 +182,7 @@ class ATMCashout {
                 attempts, max_attempts
             FROM sat_tokens
             WHERE sat_number = :sat_number
-            AND status IN ('active', 'pending')
+            AND LOWER(status) IN ('active', 'pending')
             AND expires_at > NOW()
         ");
         $stmt->execute([':sat_number' => $satNumber]);
@@ -197,7 +200,7 @@ class ATMCashout {
         // Verify PIN - check both 'pin' column and 'code_hash' (hashed)
         $pinValid = false;
         
-        // Check plain text pin column (bpchar)
+        // Check plain text pin column (bpchar) - trim whitespace
         if (!empty($sat['pin']) && trim($sat['pin']) === $pin) {
             $pinValid = true;
         }
