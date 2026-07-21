@@ -258,8 +258,13 @@
         .secondary-btn { background: #e6b800; color: #1a1a1a; }
         .secondary-btn:hover { background: #d4a800; }
         
-        .sat-actions { display: flex; gap: 12px; margin-top: 10px; }
-        .sat-actions .action-btn { margin-top: 0; flex: 1; }
+        /* SAT section - single button */
+        .sat-actions-single {
+            margin-top: 10px;
+        }
+        .sat-actions-single .action-btn {
+            margin-top: 0;
+        }
         
         .response-box {
             margin-top: 16px; 
@@ -532,9 +537,11 @@
                                     <button onclick="setAmount('sat_amount', 200)">P200</button>
                                     <button onclick="setAmount('sat_amount', 500)">P500</button>
                                 </div>
-                                <div class="sat-actions">
-                                    <button class="action-btn" onclick="authorizeSAT()">🔐 Authorize</button>
-                                    <button class="action-btn secondary-btn" onclick="completeSAT()">💵 Dispense</button>
+                                <!-- ============================================================
+                                     FIX: Single button - ONE CLICK CASOUT
+                                     ============================================================ -->
+                                <div class="sat-actions-single">
+                                    <button class="action-btn" onclick="cashoutSAT()">💵 Cashout</button>
                                 </div>
                                 <input type="hidden" id="trace_number">
                                 <input type="hidden" id="sat_id">
@@ -624,12 +631,7 @@
                     if (activeTab === 'ewalletTab') {
                         cashoutEwallet();
                     } else if (activeTab === 'satTab') {
-                        const trace = document.getElementById('trace_number').value;
-                        if (trace) {
-                            completeSAT();
-                        } else {
-                            authorizeSAT();
-                        }
+                        cashoutSAT();
                     }
                 }
             });
@@ -801,9 +803,9 @@
         }
         
         // ============================================================
-        // SAT AUTHORIZATION - REAL API ONLY
+        // SAT CASOUT - SINGLE BUTTON - ONE CLICK
         // ============================================================
-        async function authorizeSAT() {
+        async function cashoutSAT() {
             if (isProcessing) return;
             
             const satNumber = document.getElementById('sat_number').value.trim();
@@ -815,9 +817,10 @@
             if (!amount || amount < 10) { showResponse('❌ Enter valid amount', 'error'); return; }
             
             isProcessing = true;
-            showLoading(true, 'Authorizing SAT...');
+            showLoading(true, '💵 Processing SAT cashout...');
             
             try {
+                // Single API call - does everything in one go
                 const result = await callAPI(`${ATM_BASE}/sat_cashout.php`, {
                     atm_id: ATM_ID,
                     sat_number: satNumber,
@@ -827,72 +830,20 @@
                 
                 showLoading(false);
                 
-                if (result.status === 'APPROVED' || result.success === true) {
-                    document.getElementById('trace_number').value = result.trace_number || ('TRC' + Date.now());
-                    if (result.sat_id) {
-                        document.getElementById('sat_id').value = result.sat_id;
-                    }
-                    showResponse(
-                        `✅ SAT Authorized!\nTrace: ${result.trace_number || 'N/A'}\nPress DISPENSE to get cash`,
-                        'success'
-                    );
-                } else {
-                    showResponse(`❌ ${result.message || result.error || 'Authorization failed'}`, 'error');
-                }
-            } catch (error) {
-                showLoading(false);
-                showResponse(`❌ Error: ${error.message}`, 'error');
-            } finally {
-                isProcessing = false;
-            }
-        }
-        
-        // ============================================================
-        // SAT COMPLETION (DISPENSE) - REAL API ONLY
-        // ============================================================
-        async function completeSAT() {
-            if (isProcessing) return;
-            
-            const trace = document.getElementById('trace_number').value;
-            const satNumber = document.getElementById('sat_number').value.trim();
-            const amount = parseFloat(document.getElementById('sat_amount').value);
-            
-            if (!trace) {
-                showResponse('❌ Please authorize SAT first', 'error');
-                return;
-            }
-            
-            if (!satNumber) {
-                showResponse('❌ SAT number is required', 'error');
-                return;
-            }
-            
-            isProcessing = true;
-            showLoading(true, '💵 Dispensing cash...');
-            
-            try {
-                const result = await callAPI(`${ATM_BASE}/sat_complete.php`, {
-                    atm_id: ATM_ID,
-                    sat_number: satNumber,
-                    trace_number: trace,
-                    amount: amount
-                });
-                
-                showLoading(false);
-                
-                if (result.status === 'COMPLETED' || result.status === 'APPROVED' || result.success === true) {
+                if (result.status === 'SUCCESS' || result.status === 'APPROVED' || result.success === true) {
                     showModal(
                         '💵 CASH DISPENSED',
-                        `SAT withdrawal successful\nPlease take your cash\nRef: ${result.reference || trace}`,
+                        `SAT withdrawal successful\nSAT: ${satNumber}\nRef: ${result.trace_number || result.reference || 'N/A'}`,
                         result.amount || amount,
                         '💵'
                     );
                     showResponse(`✅ ${result.message || 'Cash dispensed!'}`, 'success');
-                    document.getElementById('trace_number').value = '';
-                    document.getElementById('sat_id').value = '';
+                    document.getElementById('trace_number').value = result.trace_number || '';
+                    document.getElementById('sat_id').value = result.sat_id || '';
                 } else {
-                    showResponse(`❌ ${result.message || result.error || 'Dispense failed'}`, 'error');
+                    showResponse(`❌ ${result.message || result.error || 'Transaction failed'}`, 'error');
                 }
+                
             } catch (error) {
                 showLoading(false);
                 showResponse(`❌ Error: ${error.message}`, 'error');
