@@ -47,7 +47,7 @@ class ATMCashout {
             $stmt->execute([
                 $satNumber,
                 $atmId,
-                $satValidation['beneficiary'] ?? 'UNKNOWN',
+                $satValidation['requester'] ?? 'UNKNOWN',
                 $amount,
                 $traceNumber
             ]);
@@ -90,7 +90,8 @@ class ATMCashout {
                 'trace_number' => $traceNumber,
                 'cashout_reference' => $cashoutReference,
                 'cashout_id' => $cashoutId,
-                'vouchmorph_notified' => $notificationResult['success']
+                'vouchmorph_notified' => $notificationResult['success'],
+                'sat_id' => $satValidation['sat_id']
             ];
 
         } catch (\Exception $e) {
@@ -119,7 +120,7 @@ class ATMCashout {
         $payload = [
             'voucher_number' => $voucherNumber,
             'amount' => $amount,
-            'currency' => 'BWP',  // Hardcoded since no currency column
+            'currency' => 'BWP',
             'cashout_reference' => $cashoutReference,
             'source' => 'ATM',
             'atm_id' => $atmId,
@@ -162,14 +163,20 @@ class ATMCashout {
     }
 
     /**
-     * Validate SAT - matches your table schema (NO currency column)
+     * Validate SAT - matches your EXACT table schema
+     * 
+     * Columns: sat_id, instrument_id, issuer_bank, acquirer_network, amount, 
+     * expires_at, status, processing, created_at, used_at, attempts, max_attempts, 
+     * last_attempt_at, sat_number, pin, code_hash, requester, 
+     * signature_verified, verification_method, updated_at
      */
     private function validateSAT(string $satNumber, string $pin, float $amount): array {
         $stmt = $this->pdo->prepare("
             SELECT 
                 sat_id, sat_number, amount, status, 
                 issuer_bank, acquirer_network, expires_at, used_at,
-                pin, code_hash, requester, instrument_id
+                pin, code_hash, requester, instrument_id,
+                attempts, max_attempts
             FROM sat_tokens
             WHERE sat_number = :sat_number
             AND status IN ('active', 'pending')
@@ -182,14 +189,20 @@ class ATMCashout {
             return ['valid' => false, 'message' => 'SAT not found or expired'];
         }
 
+        // Check if already used
         if (!empty($sat['used_at'])) {
             return ['valid' => false, 'message' => 'SAT has already been used'];
         }
 
+        // Verify PIN - check both 'pin' column and 'code_hash' (hashed)
         $pinValid = false;
-        if (!empty($sat['pin']) && $sat['pin'] === $pin) {
+        
+        // Check plain text pin column (bpchar)
+        if (!empty($sat['pin']) && trim($sat['pin']) === $pin) {
             $pinValid = true;
         }
+        
+        // Check hashed pin (code_hash)
         if (!$pinValid && !empty($sat['code_hash']) && password_verify($pin, $sat['code_hash'])) {
             $pinValid = true;
         }
@@ -198,23 +211,24 @@ class ATMCashout {
             return ['valid' => false, 'message' => 'Invalid SAT PIN'];
         }
 
+        // Verify amount matches
         if ((float)$sat['amount'] != $amount) {
             return ['valid' => false, 'message' => 'Amount does not match SAT value'];
         }
 
         return [
             'valid' => true,
-            'beneficiary' => $sat['requester'] ?? 'UNKNOWN',
+            'requester' => $sat['requester'] ?? 'UNKNOWN',
             'issuer_bank' => $sat['issuer_bank'] ?? 'UNKNOWN',
             'acquirer_network' => $sat['acquirer_network'] ?? 'UNKNOWN',
             'instrument_id' => $sat['instrument_id'] ?? null,
-            'sat_id' => $sat['sat_id'],
+            'sat_id' => (int)$sat['sat_id'],
             'amount' => (float)$sat['amount']
         ];
     }
 
     /**
-     * Mark SAT as used
+     * Mark SAT as used (redeemed)
      */
     private function markSATUsed(string $satNumber, string $atmId): void {
         $stmt = $this->pdo->prepare("
@@ -228,6 +242,7 @@ class ATMCashout {
         ");
         $stmt->execute([':sat_number' => $satNumber]);
 
+        // Log the usage if log table exists
         try {
             $stmt = $this->pdo->prepare("
                 SELECT sat_id FROM sat_tokens WHERE sat_number = :sat_number
@@ -251,6 +266,7 @@ class ATMCashout {
                 ]);
             }
         } catch (\Exception $e) {
+            // Log table might not exist - just continue
             error_log("SAT usage log skipped: " . $e->getMessage());
         }
     }
