@@ -14,7 +14,7 @@ require_once __DIR__ . '/../db.php';
 // Load the ATMCashout class
 require_once __DIR__ . '/../atm/ATMcashout.php';
 
-use atm\ATMCashout;
+use ATM\ATMCashout;  // <-- FIX: Use ATM (capital A)
 
 header('Content-Type: application/json');
 
@@ -26,7 +26,7 @@ try {
         throw new Exception("Invalid JSON input");
     }
     
-    $atmId = $input['atm_id'] ?? 'ATM001';
+    $atmId = (string)($input['atm_id'] ?? 'ATM001');  // <-- FIX: Cast to string
     $satNumber = trim($input['sat_number'] ?? '');
     $pin = trim($input['pin'] ?? '');
     $amount = (float)($input['amount'] ?? 0);
@@ -42,7 +42,7 @@ try {
         throw new Exception("Invalid amount");
     }
     
-    // Initialize the ATMCashout class (NOT ATMService)
+    // Initialize the ATMCashout class
     $atmCashout = new ATMCashout($pdo);
     
     // Process the cashout - THIS WILL NOTIFY VOUCHMORPH
