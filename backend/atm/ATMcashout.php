@@ -37,36 +37,21 @@ class ATMCashout {
                 ];
             }
 
-            // 2. Log cashout attempt
-            $stmt = $this->pdo->prepare("
-                INSERT INTO atm_cashouts 
-                (sat_code, atm_id, issued_to, amount, status, trace_number, created_at) 
-                VALUES (?, ?, ?, ?, 'PENDING', ?, NOW())
-            ");
-            $traceNumber = 'ATM_' . time() . '_' . substr($satNumber, -6);
-            $stmt->execute([
-                $satNumber,
-                $atmId,
-                $satValidation['requester'] ?? 'UNKNOWN',
-                $amount,
-                $traceNumber
-            ]);
-            $cashoutId = $this->pdo->lastInsertId();
-
-            // 3. Mark SAT as used (redeemed)
+            // 2. Mark SAT as used (redeemed)
             $this->markSATUsed($satNumber, $atmId);
 
-            // 4. Create transaction record
-            $this->createTransactionRecord($satNumber, $amount, $atmId, $traceNumber);
+            // 3. Create transaction record
+            $this->createTransactionRecord($satNumber, $amount, $atmId);
 
-            // 5. Commit transaction
+            // 4. Commit transaction
             $this->pdo->commit();
 
-            // 6. Generate cashout reference
+            // 5. Generate cashout reference
+            $traceNumber = 'ATM_' . time() . '_' . substr($satNumber, -6);
             $cashoutReference = 'ATM-' . time() . '-' . substr($satNumber, -6);
 
             // ============================================================
-            // 7. NOTIFY VOUCHMORPH
+            // 6. NOTIFY VOUCHMORPH
             // ============================================================
             $notificationResult = $this->notifyVouchMorph(
                 $satNumber,
@@ -89,9 +74,8 @@ class ATMCashout {
                 'amount' => $amount,
                 'trace_number' => $traceNumber,
                 'cashout_reference' => $cashoutReference,
-                'cashout_id' => $cashoutId,
-                'vouchmorph_notified' => $notificationResult['success'],
-                'sat_id' => $satValidation['sat_id']
+                'sat_id' => $satValidation['sat_id'],
+                'vouchmorph_notified' => $notificationResult['success']
             ];
 
         } catch (\Exception $e) {
@@ -164,22 +148,13 @@ class ATMCashout {
 
     /**
      * Validate SAT - matches your EXACT table schema
-     * 
-     * Columns: sat_id, instrument_id, issuer_bank, acquirer_network, amount, 
-     * expires_at, status, processing, created_at, used_at, attempts, max_attempts, 
-     * last_attempt_at, sat_number, pin, code_hash, requester, 
-     * signature_verified, verification_method, updated_at
-     * 
-     * FIX: Uses LOWER(status) to handle case-insensitive status matching
-     * (ACTIVE, active, Active all match)
      */
     private function validateSAT(string $satNumber, string $pin, float $amount): array {
         $stmt = $this->pdo->prepare("
             SELECT 
                 sat_id, sat_number, amount, status, 
                 issuer_bank, acquirer_network, expires_at, used_at,
-                pin, code_hash, requester, instrument_id,
-                attempts, max_attempts
+                pin, code_hash, requester, instrument_id
             FROM sat_tokens
             WHERE sat_number = :sat_number
             AND LOWER(status) IN ('active', 'pending')
@@ -244,51 +219,22 @@ class ATMCashout {
             WHERE sat_number = :sat_number
         ");
         $stmt->execute([':sat_number' => $satNumber]);
-
-        // Log the usage if log table exists
-        try {
-            $stmt = $this->pdo->prepare("
-                SELECT sat_id FROM sat_tokens WHERE sat_number = :sat_number
-            ");
-            $stmt->execute([':sat_number' => $satNumber]);
-            $sat = $stmt->fetch(\PDO::FETCH_ASSOC);
-            
-            if ($sat) {
-                $stmt = $this->pdo->prepare("
-                    INSERT INTO sat_usage_log 
-                    (sat_id, sat_number, used_by, used_at, atm_id, amount)
-                    VALUES 
-                    (:sat_id, :sat_number, 'ATM_SYSTEM', NOW(), :atm_id, 
-                        (SELECT amount FROM sat_tokens WHERE sat_id = :sat_id2))
-                ");
-                $stmt->execute([
-                    ':sat_id' => $sat['sat_id'],
-                    ':sat_number' => $satNumber,
-                    ':atm_id' => $atmId,
-                    ':sat_id2' => $sat['sat_id']
-                ]);
-            }
-        } catch (\Exception $e) {
-            // Log table might not exist - just continue
-            error_log("SAT usage log skipped: " . $e->getMessage());
-        }
     }
 
     /**
      * Create transaction record
      */
-    private function createTransactionRecord(string $satNumber, float $amount, string $atmId, string $traceNumber): void {
+    private function createTransactionRecord(string $satNumber, float $amount, string $atmId): void {
         $stmt = $this->pdo->prepare("
             INSERT INTO transactions 
-            (user_id, from_account, to_account, type, amount, reference, description, status, created_at)
+            (user_id, from_account, to_account, type, amount, description, status, created_at)
             VALUES 
-            (NULL, :from_account, :to_account, 'atm_cashout', :amount, :trace, :desc, 'completed', NOW())
+            (NULL, :from_account, :to_account, 'atm_cashout', :amount, :desc, 'completed', NOW())
         ");
         $stmt->execute([
             ':from_account' => 'SAT:' . $satNumber,
             ':to_account' => 'ATM:' . $atmId,
             ':amount' => $amount,
-            ':trace' => $traceNumber,
             ':desc' => "ATM cashout of SAT {$satNumber} at ATM {$atmId}"
         ]);
     }
