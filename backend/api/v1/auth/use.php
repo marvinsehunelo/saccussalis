@@ -2,8 +2,8 @@
 // saccussalis/api/v1/source/use.php
 // POST /api/v1/source/use
 
-require_once __DIR__ . '/../../config/database.php';
-require_once __DIR__ . '/../../config/crypto.php';
+require_once __DIR__ . '/../../../db.php';
+require_once __DIR__ . '/../../../helpers/crypto.php';
 
 header('Content-Type: application/json');
 
