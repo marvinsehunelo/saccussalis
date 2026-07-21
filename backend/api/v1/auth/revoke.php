@@ -2,8 +2,8 @@
 // saccussalis/api/v1/auth/revoke.php
 // DELETE /api/v1/auth/revoke/{source_reference}
 
-require_once __DIR__ . '/../../config/database.php';
-require_once __DIR__ . '/../../config/crypto.php';
+require_once __DIR__ . '/../../../db.php';
+require_once __DIR__ . '/../../../helpers/crypto.php';
 
 header('Content-Type: application/json');
 
