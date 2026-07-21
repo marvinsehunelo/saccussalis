@@ -21,11 +21,9 @@ class ATMCashout {
 
     /**
      * Process SAT cashout and notify VouchMorph
-     * Same pattern as eWallet cashout notification
      */
     public function cashoutSAT(string $satNumber, string $atmId, string $pin, float $amount): array {
         try {
-            // Start transaction
             $this->pdo->beginTransaction();
 
             // 1. Validate SAT from database
@@ -68,15 +66,15 @@ class ATMCashout {
             $cashoutReference = 'ATM-' . time() . '-' . substr($satNumber, -6);
 
             // ============================================================
-            // 7. NOTIFY VOUCHMORPH - SAME PATTERN AS EWALLET
+            // 7. NOTIFY VOUCHMORPH
             // ============================================================
             $notificationResult = $this->notifyVouchMorph(
-                $satNumber,           // voucher_number
-                $amount,              // amount
-                $cashoutReference,    // cashout_reference
-                'ATM_SYSTEM',         // requester
-                $atmId,               // atm_id
-                null                  // swap_reference (optional)
+                $satNumber,
+                $amount,
+                $cashoutReference,
+                'ATM_SYSTEM',
+                $atmId,
+                null
             );
 
             if ($notificationResult['success']) {
@@ -85,9 +83,6 @@ class ATMCashout {
                 error_log("ATM Cashout: ⚠️ VouchMorph notification failed - " . ($notificationResult['message'] ?? 'Unknown'));
             }
 
-            // ============================================================
-            // 8. RESPONSE
-            // ============================================================
             return [
                 'status' => 'SUCCESS',
                 'message' => 'Cash dispensed successfully',
@@ -111,8 +106,7 @@ class ATMCashout {
     }
 
     /**
-     * Notify VouchMorph - SAME PATTERN AS EWALLET
-     * Uses the same endpoint and payload structure
+     * Notify VouchMorph
      */
     private function notifyVouchMorph(
         string $voucherNumber, 
@@ -125,7 +119,7 @@ class ATMCashout {
         $payload = [
             'voucher_number' => $voucherNumber,
             'amount' => $amount,
-            'currency' => 'BWP',
+            'currency' => 'BWP',  // Hardcoded since no currency column
             'cashout_reference' => $cashoutReference,
             'source' => 'ATM',
             'atm_id' => $atmId,
@@ -134,7 +128,6 @@ class ATMCashout {
             'timestamp' => time()
         ];
 
-        // Add signature if function exists
         if (function_exists('generate_signature')) {
             $payload['signature'] = generate_signature($payload, 'ATM');
         }
@@ -169,13 +162,12 @@ class ATMCashout {
     }
 
     /**
-     * Validate SAT from database - matches your table schema
+     * Validate SAT - matches your table schema (NO currency column)
      */
     private function validateSAT(string $satNumber, string $pin, float $amount): array {
-        // Get SAT from database
         $stmt = $this->pdo->prepare("
             SELECT 
-                sat_id, sat_number, amount, currency, status, 
+                sat_id, sat_number, amount, status, 
                 issuer_bank, acquirer_network, expires_at, used_at,
                 pin, code_hash, requester, instrument_id
             FROM sat_tokens
@@ -190,20 +182,14 @@ class ATMCashout {
             return ['valid' => false, 'message' => 'SAT not found or expired'];
         }
 
-        // Check if already used
         if (!empty($sat['used_at'])) {
             return ['valid' => false, 'message' => 'SAT has already been used'];
         }
 
-        // Verify PIN - check both 'pin' column and 'code_hash' (hashed)
         $pinValid = false;
-        
-        // Check plain text pin column (if stored)
         if (!empty($sat['pin']) && $sat['pin'] === $pin) {
             $pinValid = true;
         }
-        
-        // Check hashed pin (code_hash)
         if (!$pinValid && !empty($sat['code_hash']) && password_verify($pin, $sat['code_hash'])) {
             $pinValid = true;
         }
@@ -212,7 +198,6 @@ class ATMCashout {
             return ['valid' => false, 'message' => 'Invalid SAT PIN'];
         }
 
-        // Verify amount matches
         if ((float)$sat['amount'] != $amount) {
             return ['valid' => false, 'message' => 'Amount does not match SAT value'];
         }
@@ -229,7 +214,7 @@ class ATMCashout {
     }
 
     /**
-     * Mark SAT as used (redeemed)
+     * Mark SAT as used
      */
     private function markSATUsed(string $satNumber, string $atmId): void {
         $stmt = $this->pdo->prepare("
@@ -243,7 +228,6 @@ class ATMCashout {
         ");
         $stmt->execute([':sat_number' => $satNumber]);
 
-        // Log the usage if log table exists
         try {
             $stmt = $this->pdo->prepare("
                 SELECT sat_id FROM sat_tokens WHERE sat_number = :sat_number
@@ -267,7 +251,6 @@ class ATMCashout {
                 ]);
             }
         } catch (\Exception $e) {
-            // Log table might not exist - just continue
             error_log("SAT usage log skipped: " . $e->getMessage());
         }
     }
@@ -296,7 +279,7 @@ class ATMCashout {
      */
     public function getSATStatus(string $satNumber): array {
         $stmt = $this->pdo->prepare("
-            SELECT sat_number, amount, currency, status, expires_at, used_at
+            SELECT sat_number, amount, status, expires_at, used_at
             FROM sat_tokens
             WHERE sat_number = :sat_number
         ");
@@ -310,7 +293,6 @@ class ATMCashout {
         return [
             'status' => $sat['status'],
             'amount' => (float)$sat['amount'],
-            'currency' => $sat['currency'] ?? 'BWP',
             'expires_at' => $sat['expires_at'],
             'used_at' => $sat['used_at']
         ];
