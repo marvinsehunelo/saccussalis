@@ -23,13 +23,13 @@ class ATMCashout {
      * Process SAT cashout and notify VouchMorph
      * Same pattern as eWallet cashout notification
      */
-    public function cashoutSAT(string $satCode, string $atmId, string $pin, float $amount): array {
+    public function cashoutSAT(string $satNumber, string $atmId, string $pin, float $amount): array {
         try {
             // Start transaction
             $this->pdo->beginTransaction();
 
-            // 1. Validate SAT via VouchMorph (using the same notification endpoint)
-            $satValidation = $this->validateSATWithVouchMorph($satCode, $pin, $amount);
+            // 1. Validate SAT from database
+            $satValidation = $this->validateSAT($satNumber, $pin, $amount);
             
             if (!$satValidation['valid']) {
                 $this->pdo->rollBack();
@@ -45,9 +45,9 @@ class ATMCashout {
                 (sat_code, atm_id, issued_to, amount, status, trace_number, created_at) 
                 VALUES (?, ?, ?, ?, 'PENDING', ?, NOW())
             ");
-            $traceNumber = 'ATM_' . time() . '_' . substr($satCode, -6);
+            $traceNumber = 'ATM_' . time() . '_' . substr($satNumber, -6);
             $stmt->execute([
-                $satCode,
+                $satNumber,
                 $atmId,
                 $satValidation['beneficiary'] ?? 'UNKNOWN',
                 $amount,
@@ -55,41 +55,38 @@ class ATMCashout {
             ]);
             $cashoutId = $this->pdo->lastInsertId();
 
-            // 3. Create interbank claim record (if needed)
-            $this->createInterbankClaim($satValidation, $amount, $satCode);
+            // 3. Mark SAT as used (redeemed)
+            $this->markSATUsed($satNumber, $atmId);
 
-            // 4. Mark SAT as redeemed
-            $this->markSATRedeemed($satCode, $atmId);
+            // 4. Create transaction record
+            $this->createTransactionRecord($satNumber, $amount, $atmId, $traceNumber);
 
-            // 5. Create transaction record
-            $this->createTransactionRecord($satCode, $amount, $atmId, $traceNumber);
-
-            // 6. Commit transaction
+            // 5. Commit transaction
             $this->pdo->commit();
 
-            // 7. Generate cashout reference
-            $cashoutReference = 'ATM-' . time() . '-' . substr($satCode, -6);
+            // 6. Generate cashout reference
+            $cashoutReference = 'ATM-' . time() . '-' . substr($satNumber, -6);
 
             // ============================================================
-            // 8. NOTIFY VOUCHMORPH - SAME PATTERN AS EWALLET
+            // 7. NOTIFY VOUCHMORPH - SAME PATTERN AS EWALLET
             // ============================================================
             $notificationResult = $this->notifyVouchMorph(
-                $satCode,           // voucher_number
-                $amount,            // amount
-                $cashoutReference,  // cashout_reference
-                'ATM_SYSTEM',       // requester
-                $atmId,             // atm_id
-                $satValidation['swap_reference'] ?? null  // swap_reference (optional)
+                $satNumber,           // voucher_number
+                $amount,              // amount
+                $cashoutReference,    // cashout_reference
+                'ATM_SYSTEM',         // requester
+                $atmId,               // atm_id
+                null                  // swap_reference (optional)
             );
 
             if ($notificationResult['success']) {
-                error_log("ATM Cashout: ✅ VouchMorph notified successfully for SAT: {$satCode}");
+                error_log("ATM Cashout: ✅ VouchMorph notified successfully for SAT: {$satNumber}");
             } else {
                 error_log("ATM Cashout: ⚠️ VouchMorph notification failed - " . ($notificationResult['message'] ?? 'Unknown'));
             }
 
             // ============================================================
-            // 9. RESPONSE
+            // 8. RESPONSE
             // ============================================================
             return [
                 'status' => 'SUCCESS',
@@ -172,29 +169,46 @@ class ATMCashout {
     }
 
     /**
-     * Validate SAT with VouchMorph
-     * Calls the same notification endpoint to validate
+     * Validate SAT from database - matches your table schema
      */
-    private function validateSATWithVouchMorph(string $satCode, string $pin, float $amount): array {
-        // First try local validation from database
+    private function validateSAT(string $satNumber, string $pin, float $amount): array {
+        // Get SAT from database
         $stmt = $this->pdo->prepare("
             SELECT 
-                sat_id, sat_code, pin_hash, amount, currency, status,
-                beneficiary, origin_bank, swap_reference, expires_at
+                sat_id, sat_number, amount, currency, status, 
+                issuer_bank, acquirer_network, expires_at, used_at,
+                pin, code_hash, requester, instrument_id
             FROM sat_tokens
-            WHERE sat_code = :sat_code
+            WHERE sat_number = :sat_number
             AND status IN ('active', 'pending')
             AND expires_at > NOW()
         ");
-        $stmt->execute([':sat_code' => $satCode]);
+        $stmt->execute([':sat_number' => $satNumber]);
         $sat = $stmt->fetch(\PDO::FETCH_ASSOC);
 
         if (!$sat) {
             return ['valid' => false, 'message' => 'SAT not found or expired'];
         }
 
-        // Verify PIN
-        if (!password_verify($pin, $sat['pin_hash'])) {
+        // Check if already used
+        if (!empty($sat['used_at'])) {
+            return ['valid' => false, 'message' => 'SAT has already been used'];
+        }
+
+        // Verify PIN - check both 'pin' column and 'code_hash' (hashed)
+        $pinValid = false;
+        
+        // Check plain text pin column (if stored)
+        if (!empty($sat['pin']) && $sat['pin'] === $pin) {
+            $pinValid = true;
+        }
+        
+        // Check hashed pin (code_hash)
+        if (!$pinValid && !empty($sat['code_hash']) && password_verify($pin, $sat['code_hash'])) {
+            $pinValid = true;
+        }
+
+        if (!$pinValid) {
             return ['valid' => false, 'message' => 'Invalid SAT PIN'];
         }
 
@@ -205,65 +219,100 @@ class ATMCashout {
 
         return [
             'valid' => true,
-            'beneficiary' => $sat['beneficiary'] ?? 'UNKNOWN',
-            'origin_bank' => $sat['origin_bank'] ?? 'UNKNOWN',
-            'swap_reference' => $sat['swap_reference'] ?? null,
+            'beneficiary' => $sat['requester'] ?? 'UNKNOWN',
+            'issuer_bank' => $sat['issuer_bank'] ?? 'UNKNOWN',
+            'acquirer_network' => $sat['acquirer_network'] ?? 'UNKNOWN',
+            'instrument_id' => $sat['instrument_id'] ?? null,
+            'sat_id' => $sat['sat_id'],
             'amount' => (float)$sat['amount']
         ];
     }
 
     /**
-     * Create interbank claim record
+     * Mark SAT as used (redeemed)
      */
-    private function createInterbankClaim(array $satValidation, float $amount, string $satCode): void {
-        $stmt = $this->pdo->prepare("
-            INSERT INTO interbank_claims 
-            (claim_reference, origin_bank, destination_bank, amount, currency, status, sat_code, created_at)
-            VALUES (?, ?, 'ATM_' . ?, ?, 'BWP', 'PENDING', ?, NOW())
-        ");
-        $claimRef = 'CLAIM_' . time() . '_' . substr($satCode, -6);
-        $stmt->execute([
-            $claimRef,
-            $satValidation['origin_bank'] ?? 'UNKNOWN',
-            $satCode,
-            $amount,
-            $satCode
-        ]);
-    }
-
-    /**
-     * Mark SAT as redeemed
-     */
-    private function markSATRedeemed(string $satCode, string $atmId): void {
+    private function markSATUsed(string $satNumber, string $atmId): void {
         $stmt = $this->pdo->prepare("
             UPDATE sat_tokens 
-            SET status = 'redeemed',
-                redeemed_at = NOW(),
-                redeemed_by = :atm_id
-            WHERE sat_code = :sat_code
+            SET status = 'used',
+                used_at = NOW(),
+                processing = NULL,
+                verification_method = 'atm_cashout',
+                updated_at = NOW()
+            WHERE sat_number = :sat_number
         ");
-        $stmt->execute([
-            ':sat_code' => $satCode,
-            ':atm_id' => $atmId
-        ]);
+        $stmt->execute([':sat_number' => $satNumber]);
+
+        // Log the usage if log table exists
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT sat_id FROM sat_tokens WHERE sat_number = :sat_number
+            ");
+            $stmt->execute([':sat_number' => $satNumber]);
+            $sat = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if ($sat) {
+                $stmt = $this->pdo->prepare("
+                    INSERT INTO sat_usage_log 
+                    (sat_id, sat_number, used_by, used_at, atm_id, amount)
+                    VALUES 
+                    (:sat_id, :sat_number, 'ATM_SYSTEM', NOW(), :atm_id, 
+                        (SELECT amount FROM sat_tokens WHERE sat_id = :sat_id2))
+                ");
+                $stmt->execute([
+                    ':sat_id' => $sat['sat_id'],
+                    ':sat_number' => $satNumber,
+                    ':atm_id' => $atmId,
+                    ':sat_id2' => $sat['sat_id']
+                ]);
+            }
+        } catch (\Exception $e) {
+            // Log table might not exist - just continue
+            error_log("SAT usage log skipped: " . $e->getMessage());
+        }
     }
 
     /**
      * Create transaction record
      */
-    private function createTransactionRecord(string $satCode, float $amount, string $atmId, string $traceNumber): void {
+    private function createTransactionRecord(string $satNumber, float $amount, string $atmId, string $traceNumber): void {
         $stmt = $this->pdo->prepare("
             INSERT INTO transactions 
             (user_id, from_account, to_account, type, amount, reference, description, status, created_at)
             VALUES 
-            (NULL, 'SAT:' . :sat_code, 'ATM:' . :atm_id, 'atm_cashout', :amount, :trace, :desc, 'completed', NOW())
+            (NULL, :from_account, :to_account, 'atm_cashout', :amount, :trace, :desc, 'completed', NOW())
         ");
         $stmt->execute([
-            ':sat_code' => $satCode,
-            ':atm_id' => $atmId,
+            ':from_account' => 'SAT:' . $satNumber,
+            ':to_account' => 'ATM:' . $atmId,
             ':amount' => $amount,
             ':trace' => $traceNumber,
-            ':desc' => "ATM cashout of SAT {$satCode} at ATM {$atmId}"
+            ':desc' => "ATM cashout of SAT {$satNumber} at ATM {$atmId}"
         ]);
+    }
+
+    /**
+     * Get SAT status
+     */
+    public function getSATStatus(string $satNumber): array {
+        $stmt = $this->pdo->prepare("
+            SELECT sat_number, amount, currency, status, expires_at, used_at
+            FROM sat_tokens
+            WHERE sat_number = :sat_number
+        ");
+        $stmt->execute([':sat_number' => $satNumber]);
+        $sat = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$sat) {
+            return ['status' => 'not_found', 'message' => 'SAT not found'];
+        }
+
+        return [
+            'status' => $sat['status'],
+            'amount' => (float)$sat['amount'],
+            'currency' => $sat['currency'] ?? 'BWP',
+            'expires_at' => $sat['expires_at'],
+            'used_at' => $sat['used_at']
+        ];
     }
 }
