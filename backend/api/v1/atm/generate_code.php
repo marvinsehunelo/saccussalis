@@ -128,7 +128,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 status,
                 wallet_id,
                 requester,
-                signature_,
+                signature_verified,
                 verification_method,
                 created_at,
                 updated_at
@@ -140,7 +140,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 'ACTIVE',
                 :wallet_id,
                 :requester,
-                :sig_,
+                :sig_verified,
                 :verification_method,
                 NOW(),
                 NOW()
@@ -346,19 +346,22 @@ if (!isset($payload['certificate'])) {
     exit;
 }
 
+// ============================================================
+// FIX: Instantiate CertificateManager
+// ============================================================
+$certManager = new CertificateManager('SACCUSSALIS');
+
+// Verify the request
 $verification = $certManager->verifySignedRequest($payload);
 
-$isValid = $verification['valid']
-    ?? $verification['verified']
-    ?? false;
-
+$isValid = $verification['verified'] ?? false;
 $requester = $verification['requester'] ?? 'UNKNOWN';
 
 error_log("SACCUSSALIS SAT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
 error_log("SACCUSSALIS SAT: Requester: {$requester}");
 
 if (!$isValid) {
-    error_log("SACCUSSALIS SAT: Certificate verification failed");
+    error_log("SACCUSSALIS SAT: Certificate verification failed: " . ($verification['message'] ?? 'Unknown error'));
     echo json_encode([
         'success' => false,
         'token_generated' => false,
