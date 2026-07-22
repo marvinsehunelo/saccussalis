@@ -1,18 +1,7 @@
 <?php
 require_once '/app/backend/helpers/CertificateManager.php';
 
-// ============================================================
-// FIX: Add the TOP-LEVEL signature from the actual request
-// The signature is at the root of the payload, not inside source_hold!
-// ============================================================
-$payload = json_decode('{"action":"GENERATE_TOKEN","amount":400,"beneficiary_phone":"+26770000000","currency":"BWP","destination_institution":"SACCUSSALIS","from_institution":"ZURUBANK","hold_reference":"CASHOUT_ZURU_1784716367","reference":"CASHOUT_ZURU_1784716367","requester":"VOUCHMORPH","source_hold":{"payload":{"action":"PLACE_HOLD","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","hold_reason":"PENDING_SWAP","destination_institution":"SACCUSSALIS","expiry":"2026-07-23 10:32:48","timestamp":1784716368,"from_institution":"ZURUBANK","source_institution":"ZURUBANK","user_id":1,"source_identifier":"10000001","source_identifier_type":"account","asset_id":10},"signature":"AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"source_institution":"ZURUBANK","source_verification":{"payload":{"action":"VERIFY_ASSET","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","institution":"ZURUBANK","timestamp":1784716368,"swap_type":"CASHOUT","requester":"VOUCHMORPH","from_institution":"ZURUBANK","source_institution":"ZURUBANK","source_identifier":"10000001","source_identifier_type":"account"},"signature":"twondnh6XCc9P65aB3gbMkPr90mGr7kj1hTALvbTabqUUP6lazGKgatGFyefp6QA0ycQJaPVofFUx+br","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"timestamp":1784716368,"to_institution":"SACCUSSALIS"}', true);
-
-// ============================================================
-// FIX: Add the TOP-LEVEL signature from the SACCUSSALIS log
-// ============================================================
-$payload['signature'] = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn";
-
-$payload['certificate'] = "-----BEGIN CERTIFICATE-----
+$cert = "-----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6\/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
 CzAJBgNVBAYTAkJXMREwDwYDVQQIDAhHYWJvcm9uZTERMA8GA1UEBwwIR2Fib3Jv
 bmUxJTAjBgNVBAoMHFZvdWNoTW9ycGggRmluYW5jaWFsIE5ldHdvcmsxGzAZBgNV
@@ -39,40 +28,35 @@ OMrPGTpmS+xzJdUN6pF5QIoIblWeLJvprcMODu1nwagR7I\/xdg4isln+TtVdRt60
 QQNPdCuu3QqNCq7suNoAEd+hHQVTzYgWKEby+XRZqkFd
 -----END CERTIFICATE-----";
 
-$certManager = new CertificateManager('SACCUSSALIS');
-
-// Test the verification
-$result = $certManager->verifySignedRequest($payload);
-
-echo "========================================\n";
-echo "REAL PAYLOAD TEST\n";
-echo "========================================\n\n";
-
-echo "Verification result:\n";
-echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n";
-echo "  Message: " . $result['message'] . "\n";
-echo "  Requester: " . $result['requester'] . "\n";
-
-if ($result['verified']) {
-    echo "\n✅ SUCCESS! The signature is valid.\n";
+$caCert = getenv('VOUCHMORPH_CA_CERT_CONTENT');
+if ($caCert) {
+    $caCert = str_replace(['\\n', '\n'], "\n", $caCert);
+    echo "CA Certificate found!\n";
 } else {
-    echo "\n❌ FAILED! The signature is invalid.\n";
-    
-    // Debug: Check what JSON was verified
-    echo "\nDebug info:\n";
-    $payloadToVerify = [];
-    $signedFields = [
-        'action', 'amount', 'beneficiary_phone', 'currency',
-        'destination_institution', 'from_institution', 'hold_reference',
-        'reference', 'requester', 'source_institution', 'timestamp',
-        'to_institution'
-    ];
-    foreach ($signedFields as $field) {
-        if (array_key_exists($field, $payload)) {
-            $payloadToVerify[$field] = $payload[$field];
-        }
-    }
-    ksort($payloadToVerify);
-    $jsonVerified = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    echo "JSON verified: " . $jsonVerified . "\n";
+    echo "No CA Certificate found!\n";
+    exit;
 }
+
+// Save to temp files
+$tempCert = tempnam(sys_get_temp_dir(), 'cert_');
+$tempCA = tempnam(sys_get_temp_dir(), 'ca_');
+file_put_contents($tempCert, $cert);
+file_put_contents($tempCA, $caCert);
+
+// Test with openssl verify
+$cmd = "openssl verify -CAfile " . escapeshellarg($tempCA) . " " . escapeshellarg($tempCert) . " 2>&1";
+echo "Running: $cmd\n";
+exec($cmd, $output, $returnCode);
+echo "Return code: $returnCode\n";
+echo "Output:\n" . implode("\n", $output) . "\n";
+
+// Also check if the certificate is signed by the CA
+$certInfo = openssl_x509_parse($cert);
+$caInfo = openssl_x509_parse($caCert);
+
+echo "\nCertificate Subject: " . ($certInfo['subject']['CN'] ?? 'unknown') . "\n";
+echo "Certificate Issuer: " . ($certInfo['issuer']['CN'] ?? 'unknown') . "\n";
+echo "CA Subject: " . ($caInfo['subject']['CN'] ?? 'unknown') . "\n";
+
+unlink($tempCert);
+unlink($tempCA);
