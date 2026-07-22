@@ -18,7 +18,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
 {
     try {
         error_log("SACCUSSALIS generate_code.php received from: {$requester}");
-        error_log("Verification method: {$verificationMethod}, Verified: " . ($signatureVerified ? 'YES' : 'NO'));
+        error_log("Verification method: {$verificationMethod}, valid: " . ($signatureVerified ? 'YES' : 'NO'));
         error_log("Payload: " . json_encode($payload));
         
         $pdo->beginTransaction();
@@ -128,7 +128,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 status,
                 wallet_id,
                 requester,
-                signature_verified,
+                signature_,
                 verification_method,
                 created_at,
                 updated_at
@@ -140,7 +140,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
                 'ACTIVE',
                 :wallet_id,
                 :requester,
-                :sig_verified,
+                :sig_,
                 :verification_method,
                 NOW(),
                 NOW()
