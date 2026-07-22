@@ -1,5 +1,10 @@
 <?php
-$cert = '-----BEGIN CERTIFICATE-----
+require_once '/app/backend/helpers/CertificateManager.php';
+
+// The top-level signature from the actual request
+$signature = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn";
+
+$certificate = "-----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
 CzAJBgNVBAYTAkJXMREwDwYDVQQIDAhHYWJvcm9uZTERMA8GA1UEBwwIR2Fib3Jv
 bmUxJTAjBgNVBAoMHFZvdWNoTW9ycGggRmluYW5jaWFsIE5ldHdvcmsxGzAZBgNV
@@ -24,51 +29,58 @@ RcLQCR8hD+MFHwaiI5G7blk9TSxtflAnuXYQqrEHcQiR4CKY2AaVBsc0gaX1OSYt
 9/nraZvFmf0YwR1opW3p/YrfW3h4Yh7en1G/Wf/IzJw3gxVes0E1CwjKEzr9Yky5
 OMrPGTpmS+xzJdUN6pF5QIoIblWeLJvprcMODu1nwagR7I/xdg4isln+TtVdRt60
 QQNPdCuu3QqNCq7suNoAEd+hHQVTzYgWKEby+XRZqkFd
------END CERTIFICATE-----';
+-----END CERTIFICATE-----";
 
-$caCert = getenv('VOUCHMORPH_CA_CERT_CONTENT');
-if ($caCert) {
-    $caCert = str_replace(['\\n', '\n'], "\n", $caCert);
-    echo "CA Certificate found!\n";
-} else {
-    echo "No CA Certificate found!\n";
+// The payload that was signed (from the log)
+$signedPayload = [
+    'action' => 'GENERATE_TOKEN',
+    'amount' => 400,
+    'beneficiary_phone' => '+26770000000',
+    'currency' => 'BWP',
+    'destination_institution' => 'SACCUSSALIS',
+    'from_institution' => 'ZURUBANK',
+    'hold_reference' => 'CASHOUT_ZURU_1784716367',
+    'reference' => 'CASHOUT_ZURU_1784716367',
+    'requester' => 'VOUCHMORPH',
+    'source_institution' => 'ZURUBANK',
+    'timestamp' => 1784716368,
+    'to_institution' => 'SACCUSSALIS'
+];
+
+ksort($signedPayload);
+$jsonToVerify = json_encode($signedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+echo "JSON that was signed:\n" . $jsonToVerify . "\n\n";
+
+// Extract public key from certificate
+$certResource = openssl_x509_read($certificate);
+if (!$certResource) {
+    echo "Failed to parse certificate\n";
     exit;
 }
 
-// Save to temp files
-$tempCert = tempnam(sys_get_temp_dir(), 'cert_');
-$tempCA = tempnam(sys_get_temp_dir(), 'ca_');
-file_put_contents($tempCert, $cert);
-file_put_contents($tempCA, $caCert);
-
-// Verify the files were written
-echo "Cert file size: " . filesize($tempCert) . "\n";
-echo "CA file size: " . filesize($tempCA) . "\n";
-
-// Test with openssl verify
-$cmd = "openssl verify -CAfile " . escapeshellarg($tempCA) . " " . escapeshellarg($tempCert) . " 2>&1";
-echo "Running: $cmd\n";
-exec($cmd, $output, $returnCode);
-echo "Return code: $returnCode\n";
-echo "Output:\n" . implode("\n", $output) . "\n";
-
-// Also try the PHP way
-$certResource = openssl_x509_read($cert);
-if ($certResource) {
-    $certInfo = openssl_x509_parse($certResource);
-    echo "\nCertificate Subject: " . ($certInfo['subject']['CN'] ?? 'unknown') . "\n";
-    echo "Certificate Issuer: " . ($certInfo['issuer']['CN'] ?? 'unknown') . "\n";
-} else {
-    echo "\nFailed to parse certificate with PHP\n";
+$publicKey = openssl_pkey_get_public($certResource);
+if (!$publicKey) {
+    echo "Failed to extract public key\n";
+    exit;
 }
 
-$caResource = openssl_x509_read($caCert);
-if ($caResource) {
-    $caInfo = openssl_x509_parse($caResource);
-    echo "CA Subject: " . ($caInfo['subject']['CN'] ?? 'unknown') . "\n";
-} else {
-    echo "Failed to parse CA certificate with PHP\n";
-}
+// Decode signature
+$decodedSig = base64_decode(str_replace('\\/', '/', $signature));
 
-unlink($tempCert);
-unlink($tempCA);
+// Verify the signature
+$result = openssl_verify($jsonToVerify, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
+
+echo "openssl_verify result: " . $result . " (1=valid, 0=invalid, -1=error)\n";
+echo "Signature is: " . ($result === 1 ? "✅ VALID" : "❌ INVALID") . "\n";
+
+// Also try with the CertificateManager
+$certManager = new CertificateManager('SACCUSSALIS');
+$testPayload = $signedPayload;
+$testPayload['signature'] = $signature;
+$testPayload['certificate'] = $certificate;
+
+$verification = $certManager->verifySignedRequest($testPayload);
+echo "\nCertificateManager result:\n";
+echo "  Verified: " . ($verification['verified'] ? "✅ YES" : "❌ NO") . "\n";
+echo "  Message: " . $verification['message'] . "\n";
