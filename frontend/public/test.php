@@ -1,11 +1,9 @@
 <?php
 require_once '/app/backend/helpers/CertificateManager.php';
 
+// Use the actual payload from the logs (including the real signature and certificate)
+$payload = json_decode('{"action":"GENERATE_TOKEN","amount":400,"beneficiary_phone":"+26770000000","currency":"BWP","destination_institution":"SACCUSSALIS","from_institution":"ZURUBANK","hold_reference":"CASHOUT_ZURU_1784716367","reference":"CASHOUT_ZURU_1784716367","requester":"VOUCHMORPH","source_hold":{"payload":{"action":"PLACE_HOLD","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","hold_reason":"PENDING_SWAP","destination_institution":"SACCUSSALIS","expiry":"2026-07-23 10:32:48","timestamp":1784716368,"from_institution":"ZURUBANK","source_institution":"ZURUBANK","user_id":1,"source_identifier":"10000001","source_identifier_type":"account","asset_id":10},"signature":"AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"source_institution":"ZURUBANK","source_verification":{"payload":{"action":"VERIFY_ASSET","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","institution":"ZURUBANK","timestamp":1784716368,"swap_type":"CASHOUT","requester":"VOUCHMORPH","from_institution":"ZURUBANK","source_institution":"ZURUBANK","source_identifier":"10000001","source_identifier_type":"account"},"signature":"twondnh6XCc9P65aB3gbMkPr90mGr7kj1hTALvbTabqUUP6lazGKgatGFyefp6QA0ycQJaPVofFUx+br","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"timestamp":1784716368,"to_institution":"SACCUSSALIS"}', true);
 
-// The actual payload from the logs
-$payload = json_decode('{"action":"GENERATE_TOKEN","amount":400,"beneficiary_phone":"+26770000000","currency":"BWP","destination_institution":"SACCUSSALIS","from_institution":"ZURUBANK","hold_reference":"CASHOUT_ZURU_1784714501","reference":"CASHOUT_ZURU_1784714501","requester":"VOUCHMORPH","source_hold":{"payload":{"action":"PLACE_HOLD","reference":"CASHOUT_ZURU_1784714501","asset_type":"ACCOUNT","amount":500,"currency":"BWP","hold_reason":"PENDING_SWAP","destination_institution":"SACCUSSALIS","expiry":"2026-07-23 10:01:42","timestamp":1784714502,"from_institution":"ZURUBANK","source_institution":"ZURUBANK","user_id":1,"source_identifier":"10000001","source_identifier_type":"account","asset_id":10},"signature":"bnvwBZgaAUEhnJ7TeOcCZHLc/bPYFAzm82thhEqcdR5JQ7uLAlExhJ/0WeT1P86Q0YlzZ1s0RCEvvyqDvq4tM/Wn7ZRwixVQMwKmQgjWTcJiEZUHgycAUnQoWbtjRfGeEqPFK1Taa0NGEZEBqIGXpTqEe+xUjY1Wnr3oCG8pzESnIFowG9uQuffFt3QO7a/nK+kJfWAHqOBMeYAI4jiR1pJsXzNxOIcG6OnqMnhyjFyV5sQsm0eBlUBkzV0XGYNpihcFc1YmSCVSnMUJO5cT8eEgIOgRAw19/U3ddtBeyAV75kjUh0wQ2ZRBbzV/iUA58ht96MTPU0N0Fg3+yNU3Zg==","source":"ZURUBANK","timestamp":1784714502,"is_hooked":false},"source_institution":"ZURUBANK","source_verification":{"payload":{"action":"VERIFY_ASSET","reference":"CASHOUT_ZURU_1784714501","asset_type":"ACCOUNT","amount":500,"currency":"BWP","institution":"ZURUBANK","timestamp":1784714502,"swap_type":"CASHOUT","requester":"VOUCHMORPH","from_institution":"ZURUBANK","source_institution":"ZURUBANK","source_identifier":"10000001","source_identifier_type":"account"},"signature":"zv5buTjJwWMAMx3aCUXor5iFkP4ZGbwrurv8Mms2ya5CPrz8/eavygkCWi/R1drlX/hqYfXLFAMN9KmSpzXm9nRVnr8qw6SU2gJLBP/ocIOIk3dGk1quSUAo1PIyDk3gAGJPmbjRCv1R/2+LITB7chZjVFB5LzPiqJ3WBEr/fCYUA1bMGMuA59IKUbfjyE4YnGEPDHtr9yB9/MjfWzCiW99dwsCg/Fz0yb7hW0xhn6nJsj4CWIT0yNdzOgykAmR5Ap5mrd5aO8vzXtcwzrNaraV7ivtHFEE+77krTHweezAcCIFj8WIXSPy3ch16SMEbG/vWE/aOwZqB6fw6Ce7F9A==","source":"ZURUBANK","timestamp":1784714502,"is_hooked":false},"timestamp":1784714502,"to_institution":"SACCUSSALIS"}', true);
-
-// Add the certificate from the logs (copy from the actual request)
 $payload['certificate'] = "-----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6\/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
 CzAJBgNVBAYTAkJXMREwDwYDVQQIDAhHYWJvcm9uZTERMA8GA1UEBwwIR2Fib3Jv
@@ -33,95 +31,41 @@ OMrPGTpmS+xzJdUN6pF5QIoIblWeLJvprcMODu1nwagR7I\/xdg4isln+TtVdRt60
 QQNPdCuu3QqNCq7suNoAEd+hHQVTzYgWKEby+XRZqkFd
 -----END CERTIFICATE-----";
 
-echo "========================================\n";
-echo "TESTING SIGNATURE VERIFICATION\n";
-echo "========================================\n\n";
-
 $certManager = new CertificateManager('SACCUSSALIS');
 
-// Test 1: What fields does VouchMorph actually sign?
-// Looking at VouchMorph's createSignedRequest(), it signs:
-// - All payload fields + timestamp
-// - EXCLUDES: source_hold and source_verification (added AFTER signing)
-$fieldsVouchMorphSigns = [
-    'action', 'amount', 'beneficiary_phone', 'currency',
-    'destination_institution', 'from_institution', 'hold_reference',
-    'reference', 'requester', 'source_institution', 'timestamp',
-    'to_institution'
-];
+// Test the verification
+$result = $certManager->verifySignedRequest($payload);
 
-$signedPayload = [];
-foreach ($fieldsVouchMorphSigns as $field) {
-    if (array_key_exists($field, $payload)) {
-        $signedPayload[$field] = $payload[$field];
-    }
-}
-ksort($signedPayload);
-$jsonThatWasSigned = json_encode($signedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+echo "========================================\n";
+echo "REAL PAYLOAD TEST\n";
+echo "========================================\n\n";
 
-echo "1. JSON that VouchMorph ACTUALLY signed:\n";
-echo $jsonThatWasSigned . "\n\n";
+echo "Verification result:\n";
+echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n";
+echo "  Message: " . $result['message'] . "\n";
+echo "  Requester: " . $result['requester'] . "\n";
 
-// Test 2: What is SACCUSSALIS currently verifying?
-$payloadToVerify = $payload;
-unset($payloadToVerify['certificate']);
-// Remove all signatures
-function removeAllSignatures($data) {
-    $result = [];
-    foreach ($data as $key => $value) {
-        if ($key === 'signature') continue;
-        if (is_array($value)) {
-            $result[$key] = removeAllSignatures($value);
-        } else {
-            $result[$key] = $value;
+if ($result['verified']) {
+    echo "\n✅ SUCCESS! The signature is valid.\n";
+} else {
+    echo "\n❌ FAILED! The signature is invalid.\n";
+    
+    // Debug: Check what JSON was verified
+    echo "\nDebug info:\n";
+    $payloadToVerify = [];
+    $signedFields = [
+        'action', 'amount', 'beneficiary_phone', 'currency',
+        'destination_institution', 'from_institution', 'hold_reference',
+        'reference', 'requester', 'source_institution', 'timestamp',
+        'to_institution'
+    ];
+    foreach ($signedFields as $field) {
+        if (array_key_exists($field, $payload)) {
+            $payloadToVerify[$field] = $payload[$field];
         }
     }
-    return $result;
+    ksort($payloadToVerify);
+    $jsonVerified = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    echo "JSON verified: " . $jsonVerified . "\n";
 }
-$payloadToVerify = removeAllSignatures($payloadToVerify);
-ksort($payloadToVerify);
-$jsonCurrentlyVerified = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-echo "2. JSON that SACCUSSALIS is currently verifying:\n";
-echo $jsonCurrentlyVerified . "\n\n";
-
-// Test 3: Compare them
-if ($jsonThatWasSigned === $jsonCurrentlyVerified) {
-    echo "✅ JSON MATCH! The signature should verify correctly.\n\n";
-} else {
-    echo "❌ JSON MISMATCH! The signature will fail.\n\n";
-    echo "Differences:\n";
-    
-    // Find what's different
-    $signedKeys = array_keys(json_decode($jsonThatWasSigned, true));
-    $verifiedKeys = array_keys(json_decode($jsonCurrentlyVerified, true));
-    
-    $extraInSigned = array_diff($signedKeys, $verifiedKeys);
-    $extraInVerified = array_diff($verifiedKeys, $signedKeys);
-    
-    if (!empty($extraInSigned)) {
-        echo "  - Fields in signed but NOT in verified: " . implode(', ', $extraInSigned) . "\n";
-    }
-    if (!empty($extraInVerified)) {
-        echo "  - Fields in verified but NOT in signed: " . implode(', ', $extraInVerified) . "\n";
-    }
-    echo "\n";
-}
-
-// Test 4: Extract public key and manually verify
-$cert = $payload['certificate'];
-$pubKey = $certManager->extractPublicKeyFromCert($cert);
-$sig = base64_decode($payload['signature']);
-$keyResource = openssl_pkey_get_public($pubKey);
-
-$result = openssl_verify($jsonThatWasSigned, $sig, $keyResource, OPENSSL_ALGO_SHA256);
-
-echo "3. Manual verification result:\n";
-echo "   openssl_verify returned: " . $result . " (1=valid, 0=invalid, -1=error)\n";
-echo "   Signature is: " . ($result === 1 ? "✅ VALID" : "❌ INVALID") . "\n\n";
-
-// Test 5: Test with the actual CertificateManager
-$verification = $certManager->verifySignedRequest($payload);
-echo "4. CertificateManager verification result:\n";
-echo "   Verified: " . ($verification['verified'] ? "✅ YES" : "❌ NO") . "\n";
-echo "   Message: " . $verification['message'] . "\n";
+php /app/frontend/public/test_real.php
