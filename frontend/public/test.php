@@ -68,4 +68,3 @@ if ($result['verified']) {
     $jsonVerified = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     echo "JSON verified: " . $jsonVerified . "\n";
 }
-php /app/frontend/public/test_real.php
