@@ -18,7 +18,7 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
 {
     try {
         error_log("SACCUSSALIS generate_code.php received from: {$requester}");
-        error_log("Verification method: {$verificationMethod}, valid: " . ($signatureVerified ? 'YES' : 'NO'));
+        error_log("Verification method: {$verificationMethod}, Verified: " . ($signatureVerified ? 'YES' : 'NO'));
         error_log("Payload: " . json_encode($payload));
         
         $pdo->beginTransaction();
@@ -346,10 +346,13 @@ if (!isset($payload['certificate'])) {
     exit;
 }
 
-$certManager = new CertificateManager('SACCUSSALIS');
 $verification = $certManager->verifySignedRequest($payload);
-$isValid = $verification['verified'];
-$requester = $verification['requester'];
+
+$isValid = $verification['valid']
+    ?? $verification['verified']
+    ?? false;
+
+$requester = $verification['requester'] ?? 'UNKNOWN';
 
 error_log("SACCUSSALIS SAT: Certificate verification: " . ($isValid ? "VALID ✓" : "INVALID ✗"));
 error_log("SACCUSSALIS SAT: Requester: {$requester}");
