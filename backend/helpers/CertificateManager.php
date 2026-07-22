@@ -152,6 +152,7 @@ class CertificateManager
     'reference', 'source_institution', 'timestamp',
     'to_institution'
 ];
+    }
         ];
         
         $payloadToVerify = [];
