@@ -192,7 +192,7 @@ class CertificateManager
      * Create signed request with certificate (for outgoing)
      */
     public function createSignedRequest(array $payload, string $requester): array
-    {
+    { 
         if (!$this->myPrivateKey || !$this->myCertificate) {
             error_log("CertificateManager: Cannot sign request - missing private key or certificate");
             return $payload;
