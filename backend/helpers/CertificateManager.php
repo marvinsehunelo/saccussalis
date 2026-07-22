@@ -113,8 +113,8 @@ class CertificateManager
      * Verify a signed request using certificate
      * 
      * FIX: Only verify fields that were ACTUALLY signed.
-     * VouchMorph adds source_hold and source_verification AFTER signing,
-     * so they should NOT be part of the verification.
+     * VouchMorph's createSignedRequest() only signs the base payload.
+     * source_hold and source_verification are added AFTER signing.
      */
     public function verifySignedRequest(array $request): array
     {
@@ -143,21 +143,18 @@ class CertificateManager
         
         // Step 3: Prepare payload for verification
         // ============================================================
-        // FIX: Only include fields that were actually signed.
-        // VouchMorph signs the payload BEFORE adding source_hold and source_verification.
-        // So we must exclude them from verification.
+        // FIX: ONLY include fields that VouchMorph actually signs.
+        // These are the fields that appear in the signed JSON.
         // ============================================================
-        $payloadToVerify = [];
-        
-        // Copy only the fields that VouchMorph actually signs
-        $fieldsToVerify = [
+        $signedFields = [
             'action', 'amount', 'beneficiary_phone', 'currency',
             'destination_institution', 'from_institution', 'hold_reference',
             'reference', 'requester', 'source_institution', 'timestamp',
             'to_institution'
         ];
         
-        foreach ($fieldsToVerify as $field) {
+        $payloadToVerify = [];
+        foreach ($signedFields as $field) {
             if (array_key_exists($field, $request)) {
                 $payloadToVerify[$field] = $request[$field];
             }
