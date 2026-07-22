@@ -111,6 +111,7 @@ class CertificateManager
     
     /**
      * Verify a signed request using certificate
+     * FIXED: Keep 'requester' in the verification payload since it's part of the signed data
      */
     public function verifySignedRequest(array $request): array
     {
@@ -138,14 +139,23 @@ class CertificateManager
         }
         
         // Step 3: Prepare payload for verification
+        // ============================================================
+        // FIX: ONLY remove signature and certificate from the payload
+        // KEEP requester because VouchMorph includes it in the signed payload
+        // KEEP timestamp because it's part of the signed payload
+        // ============================================================
         $payloadToVerify = $request;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
-        unset($payloadToVerify['requester']);
+        // DO NOT remove 'requester' - it's part of the signed data
+        // DO NOT remove 'timestamp' - it's part of the signed data
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
+        
+        // Debug: Log what's being verified
+        error_log("CertificateManager: VERIFYING JSON: " . $jsonToVerify);
         
         // Step 4: Verify signature
         $keyResource = openssl_pkey_get_public($publicKey);
@@ -157,6 +167,7 @@ class CertificateManager
         $isValid = ($result === 1);
         
         error_log("CertificateManager: Request from {$requester} - Signature: " . ($isValid ? "VALID" : "INVALID"));
+        error_log("CertificateManager: openssl_verify result: " . $result . " (1=valid, 0=invalid, -1=error)");
         
         return [
             'verified' => $isValid,
@@ -184,6 +195,10 @@ class CertificateManager
         $keyResource = openssl_pkey_get_private($this->myPrivateKey);
         openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
         
+        // ============================================================
+        // NOTE: requester is added AFTER signing, so it's NOT part of
+        // the signed data. It's included in the response for identification.
+        // ============================================================
         return array_merge($payloadWithTimestamp, [
             'signature' => base64_encode($signature),
             'requester' => $requester,
