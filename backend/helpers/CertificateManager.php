@@ -147,10 +147,11 @@ class CertificateManager
         // These are the fields that appear in the signed JSON.
         // ============================================================
         $signedFields = [
-            'action', 'amount', 'beneficiary_phone', 'currency',
-            'destination_institution', 'from_institution', 'hold_reference',
-            'reference', 'requester', 'source_institution', 'timestamp',
-            'to_institution'
+    'action', 'amount', 'beneficiary_phone', 'currency',
+    'destination_institution', 'from_institution', 'hold_reference',
+    'reference', 'source_institution', 'timestamp',
+    'to_institution'
+];
         ];
         
         $payloadToVerify = [];
