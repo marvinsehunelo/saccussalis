@@ -1,8 +1,9 @@
 <?php
-require_once '/app/backend/helpers/CertificateManager.php';
+// Test the exact signature from the logs
+$signatureFromLog = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn";
 
-// The top-level signature from the actual request
-$signature = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn";
+// The signature as it would be after JSON decoding (\/ becomes /)
+$signatureDecoded = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL/F4CYW3g5BAgoaHc/+VkBn";
 
 $certificate = "-----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
@@ -31,7 +32,6 @@ OMrPGTpmS+xzJdUN6pF5QIoIblWeLJvprcMODu1nwagR7I/xdg4isln+TtVdRt60
 QQNPdCuu3QqNCq7suNoAEd+hHQVTzYgWKEby+XRZqkFd
 -----END CERTIFICATE-----";
 
-// The payload that was signed (from the log)
 $signedPayload = [
     'action' => 'GENERATE_TOKEN',
     'amount' => 400,
@@ -50,37 +50,61 @@ $signedPayload = [
 ksort($signedPayload);
 $jsonToVerify = json_encode($signedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-echo "JSON that was signed:\n" . $jsonToVerify . "\n\n";
+echo "JSON to verify:\n" . $jsonToVerify . "\n\n";
 
-// Extract public key from certificate
+// Extract public key
 $certResource = openssl_x509_read($certificate);
-if (!$certResource) {
-    echo "Failed to parse certificate\n";
-    exit;
-}
-
 $publicKey = openssl_pkey_get_public($certResource);
-if (!$publicKey) {
-    echo "Failed to extract public key\n";
-    exit;
+
+// Test both signature versions
+echo "Testing signature with escaped slashes (from JSON):\n";
+$sig1 = base64_decode($signatureFromLog);
+$result1 = openssl_verify($jsonToVerify, $sig1, $publicKey, OPENSSL_ALGO_SHA256);
+echo "  Result: " . $result1 . " (1=valid, 0=invalid)\n";
+
+echo "\nTesting signature with unescaped slashes (after JSON decode):\n";
+$sig2 = base64_decode($signatureDecoded);
+$result2 = openssl_verify($jsonToVerify, $sig2, $publicKey, OPENSSL_ALGO_SHA256);
+echo "  Result: " . $result2 . " (1=valid, 0=invalid)\n";
+
+// Test with the signature as-is (no base64 decode)
+echo "\nTesting raw signature (no base64 decode):\n";
+$result3 = openssl_verify($jsonToVerify, $signatureFromLog, $publicKey, OPENSSL_ALGO_SHA256);
+echo "  Result: " . $result3 . " (1=valid, 0=invalid)\n";
+
+echo "\n";
+
+// Also test the same with VouchMorph's actual private key by generating a new signature
+// We need to find if the private key matches
+$privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT');
+if ($privateKeyContent) {
+    $privateKeyContent = str_replace(['\\n', '\n'], "\n", $privateKeyContent);
+    $privateKey = openssl_pkey_get_private($privateKeyContent);
+    if ($privateKey) {
+        // Generate a new signature
+        $newSignature = '';
+        openssl_sign($jsonToVerify, $newSignature, $privateKey, OPENSSL_ALGO_SHA256);
+        $newSigB64 = base64_encode($newSignature);
+        
+        echo "Generated new signature with VouchMorph's private key:\n";
+        echo substr($newSigB64, 0, 100) . "...\n";
+        
+        // Verify the new signature
+        $result4 = openssl_verify($jsonToVerify, $newSignature, $publicKey, OPENSSL_ALGO_SHA256);
+        echo "New signature verification result: " . $result4 . " (1=valid, 0=invalid)\n";
+        
+        // Compare with the signature from the log
+        echo "\nSignature from log: " . substr($signatureFromLog, 0, 50) . "...\n";
+        echo "New signature:      " . substr($newSigB64, 0, 50) . "...\n";
+        
+        if ($signatureFromLog === $newSigB64) {
+            echo "\n✅ Signatures MATCH! The signature should be valid.\n";
+        } else {
+            echo "\n❌ Signatures DO NOT MATCH! The signature is from a different private key.\n";
+        }
+    } else {
+        echo "Could not load private key from environment\n";
+    }
+} else {
+    echo "VOUCHMORPH_PRIVATE_KEY_CONTENT not found in environment\n";
 }
-
-// Decode signature
-$decodedSig = base64_decode(str_replace('\\/', '/', $signature));
-
-// Verify the signature
-$result = openssl_verify($jsonToVerify, $decodedSig, $publicKey, OPENSSL_ALGO_SHA256);
-
-echo "openssl_verify result: " . $result . " (1=valid, 0=invalid, -1=error)\n";
-echo "Signature is: " . ($result === 1 ? "✅ VALID" : "❌ INVALID") . "\n";
-
-// Also try with the CertificateManager
-$certManager = new CertificateManager('SACCUSSALIS');
-$testPayload = $signedPayload;
-$testPayload['signature'] = $signature;
-$testPayload['certificate'] = $certificate;
-
-$verification = $certManager->verifySignedRequest($testPayload);
-echo "\nCertificateManager result:\n";
-echo "  Verified: " . ($verification['verified'] ? "✅ YES" : "❌ NO") . "\n";
-echo "  Message: " . $verification['message'] . "\n";
