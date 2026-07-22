@@ -1,8 +1,16 @@
 <?php
 require_once '/app/backend/helpers/CertificateManager.php';
 
-// Use the actual payload from the logs (including the real signature and certificate)
+// ============================================================
+// FIX: Add the TOP-LEVEL signature from the actual request
+// The signature is at the root of the payload, not inside source_hold!
+// ============================================================
 $payload = json_decode('{"action":"GENERATE_TOKEN","amount":400,"beneficiary_phone":"+26770000000","currency":"BWP","destination_institution":"SACCUSSALIS","from_institution":"ZURUBANK","hold_reference":"CASHOUT_ZURU_1784716367","reference":"CASHOUT_ZURU_1784716367","requester":"VOUCHMORPH","source_hold":{"payload":{"action":"PLACE_HOLD","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","hold_reason":"PENDING_SWAP","destination_institution":"SACCUSSALIS","expiry":"2026-07-23 10:32:48","timestamp":1784716368,"from_institution":"ZURUBANK","source_institution":"ZURUBANK","user_id":1,"source_identifier":"10000001","source_identifier_type":"account","asset_id":10},"signature":"AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"source_institution":"ZURUBANK","source_verification":{"payload":{"action":"VERIFY_ASSET","reference":"CASHOUT_ZURU_1784716367","asset_type":"ACCOUNT","amount":500,"currency":"BWP","institution":"ZURUBANK","timestamp":1784716368,"swap_type":"CASHOUT","requester":"VOUCHMORPH","from_institution":"ZURUBANK","source_institution":"ZURUBANK","source_identifier":"10000001","source_identifier_type":"account"},"signature":"twondnh6XCc9P65aB3gbMkPr90mGr7kj1hTALvbTabqUUP6lazGKgatGFyefp6QA0ycQJaPVofFUx+br","source":"ZURUBANK","timestamp":1784716368,"is_hooked":false},"timestamp":1784716368,"to_institution":"SACCUSSALIS"}', true);
+
+// ============================================================
+// FIX: Add the TOP-LEVEL signature from the SACCUSSALIS log
+// ============================================================
+$payload['signature'] = "AvuBrDSkckwndc7JfjZbM9P0nPg1vWFBETazYWkynvL6baXFr7Qqq59Fwt0QvM71JhESyDa39q0gWLKWqgfJguNe746o++eq+iAL\/F4CYW3g5BAgoaHc\/+VkBn";
 
 $payload['certificate'] = "-----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6\/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
@@ -41,7 +49,7 @@ echo "REAL PAYLOAD TEST\n";
 echo "========================================\n\n";
 
 echo "Verification result:\n";
-echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n"; 
+echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n";
 echo "  Message: " . $result['message'] . "\n";
 echo "  Requester: " . $result['requester'] . "\n";
 
