@@ -41,7 +41,7 @@ echo "REAL PAYLOAD TEST\n";
 echo "========================================\n\n";
 
 echo "Verification result:\n";
-echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n";
+echo "  Verified: " . ($result['verified'] ? "✅ YES" : "❌ NO") . "\n"; 
 echo "  Message: " . $result['message'] . "\n";
 echo "  Requester: " . $result['requester'] . "\n";
 
