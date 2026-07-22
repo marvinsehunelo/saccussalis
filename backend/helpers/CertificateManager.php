@@ -110,26 +110,11 @@ class CertificateManager
     }
     
     /**
-     * Recursively remove all signature fields from an array
-     */
-    private function removeAllSignatures(array $data): array
-    {
-        $result = [];
-        foreach ($data as $key => $value) {
-            if ($key === 'signature') {
-                continue;
-            }
-            if (is_array($value)) {
-                $result[$key] = $this->removeAllSignatures($value);
-            } else {
-                $result[$key] = $value;
-            }
-        }
-        return $result;
-    }
-    
-    /**
      * Verify a signed request using certificate
+     * 
+     * FIX: Only verify fields that were ACTUALLY signed.
+     * VouchMorph adds source_hold and source_verification AFTER signing,
+     * so they should NOT be part of the verification.
      */
     public function verifySignedRequest(array $request): array
     {
@@ -156,14 +141,36 @@ class CertificateManager
             return ['verified' => false, 'message' => 'Cannot extract public key', 'requester' => $requester];
         }
         
-        // Step 3: Prepare payload for verification - remove ALL signatures at any level
-        $payloadToVerify = $request;
-        unset($payloadToVerify['certificate']);
-        $payloadToVerify = $this->removeAllSignatures($payloadToVerify);
+        // Step 3: Prepare payload for verification
+        // ============================================================
+        // FIX: Only include fields that were actually signed.
+        // VouchMorph signs the payload BEFORE adding source_hold and source_verification.
+        // So we must exclude them from verification.
+        // ============================================================
+        $payloadToVerify = [];
+        
+        // Copy only the fields that VouchMorph actually signs
+        $fieldsToVerify = [
+            'action', 'amount', 'beneficiary_phone', 'currency',
+            'destination_institution', 'from_institution', 'hold_reference',
+            'reference', 'requester', 'source_institution', 'timestamp',
+            'to_institution'
+        ];
+        
+        foreach ($fieldsToVerify as $field) {
+            if (array_key_exists($field, $request)) {
+                $payloadToVerify[$field] = $request[$field];
+            }
+        }
+        
+        // Sort keys for consistent JSON
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
+        
+        // DEBUG: Log what's being verified
+        error_log("CertificateManager: VERIFYING JSON: " . $jsonToVerify);
         
         // Step 4: Verify signature
         $keyResource = openssl_pkey_get_public($publicKey);
@@ -175,6 +182,7 @@ class CertificateManager
         $isValid = ($result === 1);
         
         error_log("CertificateManager: Request from {$requester} - Signature: " . ($isValid ? "VALID" : "INVALID"));
+        error_log("CertificateManager: openssl_verify result: " . $result . " (1=valid, 0=invalid, -1=error)");
         
         return [
             'verified' => $isValid,
@@ -201,6 +209,9 @@ class CertificateManager
         $signature = '';
         $keyResource = openssl_pkey_get_private($this->myPrivateKey);
         openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
+        
+        // DEBUG: Log what was signed
+        error_log("CertificateManager: SIGNING JSON: " . $jsonToSign);
         
         return array_merge($payloadWithTimestamp, [
             'signature' => base64_encode($signature),
