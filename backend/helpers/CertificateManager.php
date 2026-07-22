@@ -111,12 +111,17 @@ class CertificateManager
     
     /**
      * Verify a signed request using certificate
-     * 
-     * FIX: Only verify fields that were ACTUALLY signed.
-     * VouchMorph's createSignedRequest() only signs the base payload.
-     * source_hold and source_verification are added AFTER signing.
-     * 'requester' is also added AFTER signing on the VouchMorph side,
-     * so it must NOT be included in the verified field set here.
+     *
+     * FIX: Verify against the FULL request payload, not a hardcoded
+     * allowlist of fields. VouchMorph's createSignedRequest() signs
+     * the entire payload it is given (including nested structures
+     * like source_hold / source_verification) — only 'signature',
+     * 'certificate', and 'requester' are added AFTER signing on the
+     * VouchMorph side, so those three are the only fields that must
+     * be excluded here. Any hardcoded subset of fields will produce
+     * a JSON string that doesn't match what was actually signed,
+     * causing every request to fail verification even though the
+     * certificate, key, and algorithm are all correct.
      */
     public function verifySignedRequest(array $request): array
     {
@@ -143,25 +148,13 @@ class CertificateManager
             return ['verified' => false, 'message' => 'Cannot extract public key', 'requester' => $requester];
         }
         
-        // Step 3: Prepare payload for verification
-        // ============================================================
-        // FIX: ONLY include fields that VouchMorph actually signs.
-        // 'requester' removed — it is added AFTER signing on the
-        // VouchMorph side and was never part of the signed bytes.
-        // ============================================================
-        $signedFields = [
-            'action', 'amount', 'beneficiary_phone', 'currency',
-            'destination_institution', 'from_institution', 'hold_reference',
-            'reference', 'source_institution', 'timestamp',
-            'to_institution'
-        ];
-        
-        $payloadToVerify = [];
-        foreach ($signedFields as $field) {
-            if (array_key_exists($field, $request)) {
-                $payloadToVerify[$field] = $request[$field];
-            }
-        }
+        // Step 3: Prepare payload for verification.
+        // Take the full request and strip only the fields that were
+        // added AFTER signing on the sender's side.
+        $payloadToVerify = $request;
+        unset($payloadToVerify['signature']);
+        unset($payloadToVerify['certificate']);
+        unset($payloadToVerify['requester']);
         
         // Sort keys for consistent JSON
         ksort($payloadToVerify);
