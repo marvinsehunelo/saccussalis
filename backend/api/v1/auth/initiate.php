@@ -41,18 +41,31 @@ try {
     // ============================================================
     $phoneNumber = $identifier; // Default: use identifier
 
-    // If this is an ACCOUNT and we have a user_id, look up the user's phone
-    if ($assetType === 'ACCOUNT' && $userId) {
-        $userStmt = $pdo->prepare("SELECT phone, full_name FROM users WHERE user_id = ?");
-        $userStmt->execute([$userId]);
-        $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+    // If this is an ACCOUNT, look up the user_id from the accounts table
+    if ($assetType === 'ACCOUNT') {
+        // Step 1: Find the user_id from the accounts table using the account number
+        $accountStmt = $pdo->prepare("SELECT user_id, account_type FROM accounts WHERE account_number = ?");
+        $accountStmt->execute([$identifier]);
+        $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($user && !empty($user['phone'])) {
-            $phoneNumber = $user['phone'];
-            $holderName = $holderName ?? $user['full_name'] ?? null;
-            error_log("[AUTH] Account: Sending OTP to user's phone: {$phoneNumber}");
+        if ($account) {
+            $userId = $account['user_id'];
+            error_log("[AUTH] Found account: account_number={$identifier}, user_id={$userId}");
+            
+            // Step 2: Look up the user's phone from the users table
+            $userStmt = $pdo->prepare("SELECT phone, full_name FROM users WHERE user_id = ?");
+            $userStmt->execute([$userId]);
+            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($user && !empty($user['phone'])) {
+                $phoneNumber = $user['phone'];
+                $holderName = $holderName ?? $user['full_name'] ?? null;
+                error_log("[AUTH] Account: Sending OTP to user's phone: {$phoneNumber} (user_id={$userId})");
+            } else {
+                error_log("[AUTH] WARNING: No phone found for user_id={$userId}, falling back to identifier");
+            }
         } else {
-            error_log("[AUTH] WARNING: No phone found for user_id={$userId}, falling back to identifier");
+            error_log("[AUTH] WARNING: Account not found: {$identifier}, falling back to identifier");
         }
     } else {
         // For WALLET, CARD, etc., use the identifier directly
