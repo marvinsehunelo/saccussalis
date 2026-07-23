@@ -4,6 +4,7 @@
 
 require_once __DIR__ . '/../../../db.php';
 require_once __DIR__ . '/../../../helpers/crypto.php';
+require_once __DIR__ . '/../../../helpers/sms.php';
 
 header('Content-Type: application/json');
 
