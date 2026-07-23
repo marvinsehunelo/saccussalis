@@ -1,199 +1,71 @@
-<?php
-// saccussalis/api/v1/auth/initiate.php
-// POST /api/v1/auth/initiate
+// saccussalis/api/v1/auth/verify.php
+// POST /api/v1/auth/verify
 
 require_once __DIR__ . '/../../../db.php';
-require_once __DIR__ . '/../../../helpers/crypto.php';
-require_once __DIR__ . '/../../../helpers/sms.php';
 
 header('Content-Type: application/json');
 
 try {
-
-    if (!isset($pdo) || !$pdo) {
-        throw new Exception("Database connection failed");
-    }
-
-
     $raw = file_get_contents('php://input');
     $input = json_decode($raw, true);
 
-
-    error_log("[AUTH] Incoming: ".$raw);
-
-
-    if (
-        !is_array($input) ||
-        empty($input['identifier']) ||
-        empty($input['asset_type'])
-    ) {
-
+    if (!isset($input['auth_id']) || !isset($input['otp'])) {
         http_response_code(400);
-
         echo json_encode([
-            "success"=>false,
-            "message"=>"identifier and asset_type required"
+            "success" => false,
+            "message" => "auth_id and otp required"
         ]);
-
         exit;
     }
 
+    $authId = trim($input['auth_id']);
+    $otp = trim($input['otp']);
 
-    $authId =
-        $input['auth_id']
-        ??
-        'AUTH_'.date('Ymd').'_'.bin2hex(random_bytes(6));
+    // Verify OTP
+    $stmt = $pdo->prepare("
+        SELECT * FROM auth_otps 
+        WHERE auth_id = ? 
+        AND otp = ? 
+        AND status = 'sent'
+        AND expires_at > CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
+        LIMIT 1
+    ");
+    $stmt->execute([$authId, $otp]);
+    $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
-
-    $identifier = trim($input['identifier']);
-
-    $assetType = strtoupper(
-        trim($input['asset_type'])
-    );
-
-
-    // Generate 6 digit OTP
-    $otp = sprintf(
-        "%06d",
-        random_int(0,999999)
-    );
-
-
-    /*
-       Store OTP
-       UTC expiry:
-       current UTC time + 5 minutes
-    */
-
-    $sql = "
-    INSERT INTO auth_otps
-    (
-        auth_id,
-        identifier,
-        asset_type,
-        otp,
-        expires_at,
-        status
-    )
-    VALUES
-    (
-        ?,?,
-        ?,?,
-        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-            + INTERVAL '5 minutes',
-        'pending'
-    )
-    ";
-
-
-    $stmt = $pdo->prepare($sql);
-
-
-    $stmt->execute([
-        $authId,
-        $identifier,
-        $assetType,
-        $otp
-    ]);
-
-
-
-    $message =
-        "Your SaccusSalis verification code is {$otp}. "
-        ."It expires in 5 minutes. "
-        ."Do not share this code.";
-
-
-
-    $smsSent =
-        sendSms(
-            $identifier,
-            $message
-        );
-
-
-
-    if ($smsSent) {
-
-
+    if ($record) {
+        // Mark as verified
         $update = $pdo->prepare("
-            UPDATE auth_otps
-            SET status='sent'
-            WHERE auth_id=?
+            UPDATE auth_otps 
+            SET status = 'verified', verified_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
+            WHERE auth_id = ?
         ");
+        $update->execute([$authId]);
 
-
-        $update->execute([
-            $authId
-        ]);
-
-
-
-        error_log(
-            "[AUTH] OTP sent to ".$identifier
-        );
-
-
+        error_log("[AUTH] OTP verified for auth_id: {$authId}, user_id: " . ($record['user_id'] ?? 'unknown'));
 
         echo json_encode([
-
-            "success"=>true,
-
-            "auth_id"=>$authId,
-
-            "message"=>"OTP sent successfully",
-
-            "expires_in"=>300
-
+            "success" => true,
+            "authorized" => true,
+            "message" => "OTP verified successfully",
+            "user_id" => $record['user_id'],
+            "identifier" => $record['identifier']
         ]);
-
-
-
     } else {
-
-
-        $pdo->prepare("
-            UPDATE auth_otps
-            SET status='failed'
-            WHERE auth_id=?
-        ")
-        ->execute([$authId]);
-
-
-
-        http_response_code(500);
-
-
+        error_log("[AUTH] OTP verification failed for auth_id: {$authId}");
+        
+        http_response_code(400);
         echo json_encode([
-
-            "success"=>false,
-
-            "message"=>"SMS sending failed"
-
+            "success" => false,
+            "authorized" => false,
+            "message" => "Invalid or expired OTP"
         ]);
-
     }
-
-
-
-}
-catch(Throwable $e)
-{
-
-    error_log(
-        "[AUTH ERROR] ".$e->getMessage()
-    );
-
-
+} catch (Throwable $e) {
+    error_log("[AUTH VERIFY ERROR] " . $e->getMessage());
     http_response_code(500);
-
-
     echo json_encode([
-
-        "success"=>false,
-
-        "message"=>$e->getMessage()
-
+        "success" => false,
+        "message" => $e->getMessage()
     ]);
-
 }
