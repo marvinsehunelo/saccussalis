@@ -30,8 +30,9 @@ $assetType = $input['asset_type'];
 $otp = sprintf("%06d", random_int(0, 999999));
 
 // Store in database - FIX: $pdo instead of $db
-$sql = "INSERT INTO auth_otps (auth_id, identifier, asset_type, otp, expires_at, status) 
-        VALUES (?, ?, ?, ?, NOW() + INTERVAL 5 MINUTE, 'pending')";
+$sql = "INSERT INTO auth_otps
+(auth_id, identifier, asset_type, otp, expires_at, status)
+VALUES (?, ?, ?, ?, NOW() + INTERVAL '5 minutes', 'pending')";
 $stmt = $pdo->prepare($sql);
 $stmt->execute([$authId, $identifier, $assetType, $otp]);
 
