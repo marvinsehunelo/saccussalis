@@ -1,3 +1,4 @@
+<?php
 // saccussalis/api/v1/auth/verify.php
 // POST /api/v1/auth/verify
 
