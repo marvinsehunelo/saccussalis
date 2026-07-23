@@ -2,18 +2,34 @@
 // saccussalis/api/v1/auth/verify.php
 // POST /api/v1/auth/verify
 
+
 require_once __DIR__ . '/../../../db.php';
 require_once __DIR__ . '/../../../helpers/crypto.php';
 
+
 header('Content-Type: application/json');
+
 
 try {
 
+
     if (!isset($pdo) || !$pdo) {
-        throw new Exception("Database connection failed");
+
+        throw new Exception(
+            "Database connection failed"
+        );
+
     }
 
-    $input = json_decode(file_get_contents('php://input'), true);
+
+
+    $input =
+        json_decode(
+            file_get_contents('php://input'),
+            true
+        );
+
+
 
     if (
         !is_array($input) ||
@@ -21,185 +37,274 @@ try {
         empty($input['otp'])
     ) {
 
+
         http_response_code(400);
 
+
         echo json_encode([
-            'success' => false,
-            'message' => 'auth_id and otp required'
+
+            "success"=>false,
+
+            "message"=>"auth_id and otp required"
+
         ]);
 
+
         exit;
+
     }
 
 
-    $authId = trim($input['auth_id']);
-    $otp    = trim($input['otp']);
+
+    $authId =
+        trim($input['auth_id']);
 
 
-    // Verify OTP
+    $otp =
+        trim($input['otp']);
+
+
+
+    /*
+       Verify OTP
+
+       UTC comparison
+    */
+
+
     $sql = "
-        SELECT *
-        FROM auth_otps
-        WHERE auth_id = ?
-        AND otp = ?
-        AND status IN ('pending','sent')
-        AND expires_at > NOW()
-        LIMIT 1
+
+    SELECT *
+
+    FROM auth_otps
+
+    WHERE auth_id=?
+
+    AND otp=?
+
+    AND status IN ('pending','sent')
+
+    AND expires_at >
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+    LIMIT 1
+
     ";
 
-    $stmt = $pdo->prepare($sql);
+
+
+    $stmt =
+        $pdo->prepare($sql);
+
+
 
     $stmt->execute([
+
         $authId,
+
         $otp
+
     ]);
 
-    $auth = $stmt->fetch(PDO::FETCH_ASSOC);
+
+
+    $auth =
+        $stmt->fetch(PDO::FETCH_ASSOC);
+
 
 
     if (!$auth) {
 
-        error_log("[AUTH] Invalid OTP for auth_id: ".$authId);
+
+        error_log(
+            "[AUTH] Invalid OTP: ".$authId
+        );
+
 
         http_response_code(400);
 
+
         echo json_encode([
-            'success' => false,
-            'message' => 'Invalid or expired OTP'
+
+            "success"=>false,
+
+            "message"=>"Invalid or expired OTP"
+
         ]);
 
+
         exit;
+
     }
 
 
 
-    // Mark OTP verified
-    $sql = "
-        UPDATE auth_otps
-        SET 
-            status='verified',
-            verified_at=NOW()
-        WHERE auth_id=?
-    ";
 
-    $stmt = $pdo->prepare($sql);
+    // Mark verified
+
+
+    $stmt =
+        $pdo->prepare("
+
+        UPDATE auth_otps
+
+        SET
+
+        status='verified',
+
+        verified_at=
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        WHERE auth_id=?
+
+        ");
+
+
 
     $stmt->execute([
+
         $authId
+
     ]);
 
 
 
-    // Generate authorization tokens
+
+
+    // Create authorization
+
 
     $sourceReference =
-        'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8));
+        'SRC_'
+        .date('Ymd')
+        .'_'
+        .bin2hex(random_bytes(8));
+
 
 
     $accessToken =
         bin2hex(random_bytes(32));
 
 
+
     $refreshToken =
         bin2hex(random_bytes(32));
 
 
+
     $expiresAt =
-        date(
+        gmdate(
             'Y-m-d H:i:s',
-            time() + 3600
+            time()+3600
         );
 
 
 
-    // Save authorized source
 
-    $sql = "
+
+    $stmt =
+        $pdo->prepare("
+
         INSERT INTO authorized_sources
+
         (
-            source_reference,
-            identifier,
-            asset_type,
-            access_token,
-            refresh_token,
-            token_expires_at,
-            holder_name,
-            status
+
+        source_reference,
+
+        identifier,
+
+        asset_type,
+
+        access_token,
+
+        refresh_token,
+
+        token_expires_at,
+
+        holder_name,
+
+        status
+
         )
+
         VALUES
-        (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            'active'
-        )
-    ";
 
+        (?,?,?,?,?,?,?,'active')
 
-    $stmt = $pdo->prepare($sql);
+        ");
+
 
 
     $stmt->execute([
 
+
         $sourceReference,
+
 
         $auth['identifier'],
 
+
         $auth['asset_type'],
+
 
         $accessToken,
 
+
         $refreshToken,
+
 
         $expiresAt,
 
-        $auth['holder_name'] ?? 'Saccussalis Client'
+
+        $auth['holder_name']
+        ??
+        'Saccussalis Client'
+
 
     ]);
 
 
-
-    error_log(
-        "[AUTH] Source authorized: ".$sourceReference
-    );
 
 
 
     echo json_encode([
 
-        'success' => true,
 
-        'authorized' => true,
+        "success"=>true,
 
-        'source_reference' => $sourceReference,
 
-        'access_token' => $accessToken,
+        "authorized"=>true,
 
-        'refresh_token' => $refreshToken,
 
-        'expires_at' => $expiresAt,
+        "source_reference"=>$sourceReference,
 
-        'holder_name' =>
-            $auth['holder_name'] ?? 'Saccussalis Client',
 
-        'asset_type' =>
-            $auth['asset_type'],
+        "access_token"=>$accessToken,
 
-        'identifier' =>
-            $auth['identifier']
+
+        "refresh_token"=>$refreshToken,
+
+
+        "expires_at"=>$expiresAt,
+
+
+        "identifier"=>$auth['identifier'],
+
+
+        "asset_type"=>$auth['asset_type']
+
 
     ]);
 
 
-} catch (Throwable $e) {
+
+}
+catch(Throwable $e)
+{
 
 
     error_log(
-        "[AUTH VERIFY ERROR] ".$e->getMessage()
+        "[VERIFY ERROR] ".$e->getMessage()
     );
 
 
@@ -208,9 +313,9 @@ try {
 
     echo json_encode([
 
-        'success' => false,
+        "success"=>false,
 
-        'message' => $e->getMessage()
+        "message"=>$e->getMessage()
 
     ]);
 
