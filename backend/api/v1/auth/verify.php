@@ -20,7 +20,7 @@ $otp = $input['otp'];
 
 // Verify OTP
 $sql = "SELECT * FROM auth_otps WHERE auth_id = ? AND otp = ? AND status = 'pending' AND expires_at > NOW()";
-$stmt = $db->prepare($sql);
+$stmt = $pdo->prepare($sql);
 $stmt->execute([$authId, $otp]);
 $auth = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -33,7 +33,7 @@ if (!$auth) {
 
 // Mark as verified
 $sql = "UPDATE auth_otps SET status = 'verified', verified_at = NOW() WHERE auth_id = ?";
-$stmt = $db->prepare($sql);
+$stmt = $pdo->prepare($sql);
 $stmt->execute([$authId]);
 
 // Generate access token (JWT or random)
@@ -46,7 +46,7 @@ $expiresAt = date('Y-m-d H:i:s', time() + 3600);
 $sql = "INSERT INTO authorized_sources 
         (source_reference, identifier, asset_type, access_token, refresh_token, token_expires_at, holder_name, status) 
         VALUES (?, ?, ?, ?, ?, ?, ?, 'active')";
-$stmt = $db->prepare($sql);
+$stmt = $pdo->prepare($sql);
 $stmt->execute([
     $sourceReference,
     $auth['identifier'],
