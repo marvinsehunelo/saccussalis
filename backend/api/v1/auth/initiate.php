@@ -10,59 +10,84 @@ header('Content-Type: application/json');
 
 try {
 
-    // Database check
     if (!isset($pdo) || !$pdo) {
-        throw new Exception('Database connection failed');
+        throw new Exception("Database connection failed");
     }
 
-    // Read request once
+
     $raw = file_get_contents('php://input');
     $input = json_decode($raw, true);
 
-    error_log("[AUTH] Incoming: " . $raw);
+
+    error_log("[AUTH] Incoming: ".$raw);
+
 
     if (
         !is_array($input) ||
         empty($input['identifier']) ||
         empty($input['asset_type'])
     ) {
+
         http_response_code(400);
+
         echo json_encode([
-            'success' => false,
-            'message' => 'identifier and asset_type required'
+            "success"=>false,
+            "message"=>"identifier and asset_type required"
         ]);
+
         exit;
     }
 
-    $authId = $input['auth_id']
-        ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
+
+    $authId =
+        $input['auth_id']
+        ??
+        'AUTH_'.date('Ymd').'_'.bin2hex(random_bytes(6));
+
 
     $identifier = trim($input['identifier']);
-    $assetType  = strtoupper(trim($input['asset_type']));
 
-    // Generate OTP
-    $otp = sprintf("%06d", random_int(0, 999999));
+    $assetType = strtoupper(
+        trim($input['asset_type'])
+    );
 
-    // Save OTP
+
+    // Generate 6 digit OTP
+    $otp = sprintf(
+        "%06d",
+        random_int(0,999999)
+    );
+
+
+    /*
+       Store OTP
+       UTC expiry:
+       current UTC time + 5 minutes
+    */
+
     $sql = "
-        INSERT INTO auth_otps
-        (
-            auth_id,
-            identifier,
-            asset_type,
-            otp,
-            expires_at,
-            status
-        )
-        VALUES
-        (
-            ?, ?, ?, ?,
-            NOW() + INTERVAL '5 minutes',
-            'pending'
-        )
+    INSERT INTO auth_otps
+    (
+        auth_id,
+        identifier,
+        asset_type,
+        otp,
+        expires_at,
+        status
+    )
+    VALUES
+    (
+        ?,?,
+        ?,?,
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+            + INTERVAL '5 minutes',
+        'pending'
+    )
     ";
 
+
     $stmt = $pdo->prepare($sql);
+
 
     $stmt->execute([
         $authId,
@@ -71,59 +96,104 @@ try {
         $otp
     ]);
 
-    // SMS text
+
+
     $message =
         "Your SaccusSalis verification code is {$otp}. "
-        . "It expires in 5 minutes. "
-        . "Do not share this code with anyone.";
+        ."It expires in 5 minutes. "
+        ."Do not share this code.";
 
-    // Send SMS
-    $smsSent = sendSms($identifier, $message);
+
+
+    $smsSent =
+        sendSms(
+            $identifier,
+            $message
+        );
+
+
 
     if ($smsSent) {
 
-        $pdo->prepare("
+
+        $update = $pdo->prepare("
             UPDATE auth_otps
             SET status='sent'
             WHERE auth_id=?
-        ")->execute([$authId]);
+        ");
 
-        error_log("[AUTH] OTP successfully sent to {$identifier}");
 
-        echo json_encode([
-            'success' => true,
-            'auth_id' => $authId,
-            'message' => 'OTP sent successfully',
-            'expires_in' => 300
+        $update->execute([
+            $authId
         ]);
 
+
+
+        error_log(
+            "[AUTH] OTP sent to ".$identifier
+        );
+
+
+
+        echo json_encode([
+
+            "success"=>true,
+
+            "auth_id"=>$authId,
+
+            "message"=>"OTP sent successfully",
+
+            "expires_in"=>300
+
+        ]);
+
+
+
     } else {
+
 
         $pdo->prepare("
             UPDATE auth_otps
             SET status='failed'
             WHERE auth_id=?
-        ")->execute([$authId]);
+        ")
+        ->execute([$authId]);
+
+
 
         http_response_code(500);
 
+
         echo json_encode([
-            'success' => false,
-            'auth_id' => $authId,
-            'message' => 'Unable to send OTP'
+
+            "success"=>false,
+
+            "message"=>"SMS sending failed"
+
         ]);
 
     }
 
-} catch (Throwable $e) {
 
-    error_log("[AUTH] " . $e->getMessage());
+
+}
+catch(Throwable $e)
+{
+
+    error_log(
+        "[AUTH ERROR] ".$e->getMessage()
+    );
+
 
     http_response_code(500);
 
+
     echo json_encode([
-        'success' => false,
-        'message' => $e->getMessage()
+
+        "success"=>false,
+
+        "message"=>$e->getMessage()
+
     ]);
 
 }
