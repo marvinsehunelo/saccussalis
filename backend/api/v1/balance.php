@@ -131,7 +131,7 @@ try {
         ];
 
     // ============================================================
-    // CHECK ACCOUNT
+    // CHECK ACCOUNT (NO status column - uses is_frozen)
     // ============================================================
     } elseif ($typeLower === 'account') {
         $stmt = $pdo->prepare("
@@ -144,7 +144,6 @@ try {
                 balance,
                 held_balance,
                 is_frozen,
-                status,
                 created_at,
                 updated_at
             FROM accounts
@@ -164,6 +163,7 @@ try {
             exit();
         }
 
+        // Accounts use is_frozen instead of status
         if ($account['is_frozen'] == 1) {
             http_response_code(403);
             echo json_encode([
@@ -191,7 +191,6 @@ try {
                 'available_balance' => $availableBalance,
                 'currency' => $account['currency'] ?? 'BWP',
                 'is_frozen' => (bool)$account['is_frozen'],
-                'status' => $account['status'] ?? 'active',
                 'created_at' => $account['created_at'],
                 'updated_at' => $account['updated_at'],
                 'timestamp' => time()
