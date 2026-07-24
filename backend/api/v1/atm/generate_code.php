@@ -3,7 +3,7 @@
 // generate_code.php
 // SAT Instrument Generator for SACCUSSALIS
 // ALIGNED with SwapService expectations
-// WITH CERTIFICATE-BASED VERIFICATION
+// WITH CERTIFICATE-BASED VERIFICATION + SMS
 // --------------------------------------------------
 
 header('Content-Type: application/json');
@@ -13,6 +13,7 @@ error_reporting(E_ALL);
 require_once '../../../db.php';
 require_once '../../../helpers/crypto.php';
 require_once '../../../helpers/CertificateManager.php';
+require_once '../../../helpers/sms.php';  // ← ADD THIS
 
 function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatureVerified, string $verificationMethod): array
 {
@@ -275,6 +276,38 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
 
         error_log("SACCUSSALIS SAT: Generated SAT {$satNumber} for amount {$amount}, Instrument ID: {$instrumentId}");
 
+        // ============================================================
+        // SEND SMS WITH SAT DETAILS
+        // ============================================================
+        $smsSent = false;
+        $smsError = null;
+
+        if (!empty($normalizedPhone)) {
+            $smsMessage = "Saccussalis Cashout Voucher\n"
+                . "Amount: BWP {$amount}\n"
+                . "SAT Number: {$satNumber}\n"
+                . "PIN: {$pin}\n"
+                . "Expires: " . date('d M Y H:i', strtotime($expiresAt)) . "\n"
+                . "Visit any Saccussalis Agent or ATM to cash out.";
+
+            error_log("SACCUSSALIS: Attempting to send SMS to +{$normalizedPhone}");
+            
+            try {
+                $smsSent = sendSms($normalizedPhone, $smsMessage);
+                if ($smsSent) {
+                    error_log("SACCUSSALIS: SMS sent successfully to +{$normalizedPhone}");
+                } else {
+                    $smsError = "SMS sending failed - check logs";
+                    error_log("SACCUSSALIS: SMS failed to send to +{$normalizedPhone}");
+                }
+            } catch (Exception $e) {
+                $smsError = $e->getMessage();
+                error_log("SACCUSSALIS: SMS exception: " . $e->getMessage());
+            }
+        } else {
+            error_log("SACCUSSALIS: No phone number provided, SMS skipped");
+        }
+
         // Return format expected by GenericBankClient/SwapService
         return [
             'success' => true,
@@ -294,6 +327,8 @@ function generateSAT(PDO $pdo, array $payload, string $requester, bool $signatur
             'requester' => $requester,
             'signature_verified' => $signatureVerified,
             'verification_method' => $verificationMethod,
+            'sms_sent' => $smsSent,
+            'sms_error' => $smsError,
             'metadata' => [
                 'wallet_id' => $walletId,
                 'user_id' => $userId,
@@ -391,6 +426,8 @@ if ($result['success']) {
         'requester' => $requester,
         'signature_verified' => $isValid,
         'verification_method' => 'certificate',
+        'sms_sent' => $result['sms_sent'] ?? false,
+        'sms_error' => $result['sms_error'] ?? null,
         'timestamp' => time()
     ];
     send_signed_response($responsePayload);
