@@ -2,7 +2,7 @@
 // test_saccussalis_certificate.php
 // Run on Saccussalis server
 
-require_once __DIR__ . '/helpers/CertificateManager.php';
+require_once __DIR__ . '/../../backend/helpers/CertificateManager.php';
 
 echo "=== SACCUSSALIS CERTIFICATE VERIFICATION TEST ===\n\n";
 
