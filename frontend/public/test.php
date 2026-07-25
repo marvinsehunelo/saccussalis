@@ -1,95 +1,118 @@
 <?php
-require_once '/app/backend/helpers/CertificateManager.php';
+// test_saccussalis_certificate.php
+// Run on Saccussalis server
 
-echo "========================================\n";
-echo "AGGRESSIVE TEST ON SACCUSSALIS\n";
-echo "========================================\n\n";
+require_once __DIR__ . '/helpers/CertificateManager.php';
 
-// 1. Get the actual certificate from the request log
-// Use the certificate that VouchMorph is sending
-$vouchmorphCert = getenv('VOUCHMORPH_CERT_CONTENT');
-if (!$vouchmorphCert) {
-    echo "❌ VOUCHMORPH_CERT_CONTENT not found!\n";
-    exit;
-}
-$vouchmorphCert = str_replace(['\\n', '\n'], "\n", $vouchmorphCert);
+echo "=== SACCUSSALIS CERTIFICATE VERIFICATION TEST ===\n\n";
 
-// 2. Get the private key
-$privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT');
-if (!$privateKeyContent) {
-    echo "❌ VOUCHMORPH_PRIVATE_KEY_CONTENT not found!\n";
-    exit;
-}
-$privateKeyContent = str_replace(['\\n', '\n'], "\n", $privateKeyContent);
-
-// 3. Create a test payload matching the actual cashout
-$testPayload = [
-    'action' => 'GENERATE_TOKEN',
-    'amount' => 400,
-    'beneficiary_phone' => '+26770000000',
-    'currency' => 'BWP',
-    'destination_institution' => 'SACCUSSALIS',
-    'from_institution' => 'ZURUBANK',
-    'hold_reference' => 'CASHOUT_ZURU_' . time(),
-    'reference' => 'CASHOUT_ZURU_' . time(),
-    'requester' => 'VOUCHMORPH',
-    'source_institution' => 'ZURUBANK',
-    'to_institution' => 'SACCUSSALIS'
+// Test payloads that Saccussalis would receive from VouchMorph
+$testPayloads = [
+    'VERIFY_ACCOUNT (WALLET)' => [
+        'action' => 'VERIFY_ACCOUNT',
+        'reference' => 'SWAP_1784973884251',
+        'account_identifier' => '+26770000000',
+        'identifier_type' => 'phone',
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'to_institution' => 'SACCUSSALIS',
+        'destination_institution' => 'SACCUSSALIS',
+        'destination_asset_type' => 'WALLET'
+    ],
+    'VERIFY_ACCOUNT (ACCOUNT)' => [
+        'action' => 'VERIFY_ACCOUNT',
+        'reference' => 'SWAP_1784973884252',
+        'account_identifier' => '10000001',
+        'identifier_type' => 'account_number',
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'to_institution' => 'SACCUSSALIS',
+        'destination_institution' => 'SACCUSSALIS',
+        'destination_asset_type' => 'ACCOUNT'
+    ],
+    'PROCESS_DEPOSIT_WITH_PROOF' => [
+        '_skip_hold' => true,
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+        'reference' => 'SWAP_1784973884251',
+        'amount' => 994,
+        'currency' => 'BWP',
+        'asset_type' => 'WALLET',
+        'destination_asset_type' => 'WALLET',
+        'destination_identifier' => '+26770000000',
+        'destination_identifier_type' => 'phone',
+        'destination_institution' => 'SACCUSSALIS',
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'to_institution' => 'SACCUSSALIS',
+        'hold_reference' => 'SWAP_1784973884251',
+        'user_id' => 42,
+        'bank' => 'ZURUBANK',
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time()
+    ]
 ];
-$testPayload['timestamp'] = time();
-ksort($testPayload);
-$jsonToSign = json_encode($testPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-echo "1. JSON to sign:\n" . $jsonToSign . "\n\n";
+$cm = new CertificateManager('SACCUSSALIS');
 
-// 4. Sign with the private key
-$privateKey = openssl_pkey_get_private($privateKeyContent);
-if (!$privateKey) {
-    echo "❌ Failed to load private key\n";
-    exit;
-}
-$signature = '';
-openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
-$signatureB64 = base64_encode($signature);
+echo "CertificateManager configured: " . ($cm->isConfigured() ? "YES" : "NO") . "\n";
 
-echo "2. Generated signature:\n" . $signatureB64 . "\n\n";
+// Simulate a signed request from VouchMorph
+$vouchmorphSigner = new CertificateManager('VOUCHMORPH');
 
-// 5. Verify with the certificate - MANUAL
-$publicKey = openssl_pkey_get_public($vouchmorphCert);
-$result = openssl_verify($jsonToSign, $signature, $publicKey, OPENSSL_ALGO_SHA256);
-echo "3. Manual verification with openssl:\n";
-echo "   openssl_verify result: " . $result . " (1=valid, 0=invalid)\n";
-echo "   Result: " . ($result === 1 ? "✅ VALID" : "❌ INVALID") . "\n\n";
-
-// 6. Verify with CertificateManager
-$fullRequest = $testPayload;
-$fullRequest['signature'] = $signatureB64;
-$fullRequest['certificate'] = $vouchmorphCert;
-$fullRequest['requester'] = 'VOUCHMORPH';
-
-$certManager = new CertificateManager('SACCUSSALIS');
-$verification = $certManager->verifySignedRequest($fullRequest);
-
-echo "4. CertificateManager verification:\n";
-echo "   Verified: " . ($verification['verified'] ? "✅ YES" : "❌ NO") . "\n";
-echo "   Message: " . $verification['message'] . "\n";
-echo "   Requester: " . $verification['requester'] . "\n";
-
-// 7. Check what JSON is being verified
-$payloadToVerify = [];
-$signedFields = [
-    'action', 'amount', 'beneficiary_phone', 'currency',
-    'destination_institution', 'from_institution', 'hold_reference',
-    'reference', 'requester', 'source_institution', 'timestamp',
-    'to_institution'
-];
-foreach ($signedFields as $field) {
-    if (array_key_exists($field, $fullRequest)) {
-        $payloadToVerify[$field] = $fullRequest[$field];
+foreach ($testPayloads as $name => $payload) {
+    echo "\n=== TESTING $name ===\n";
+    echo "Original payload keys: " . implode(', ', array_keys($payload)) . "\n";
+    
+    // Sign as VouchMorph would
+    $signed = $vouchmorphSigner->createSignedRequest($payload, 'VOUCHMORPH');
+    
+    echo "Signed payload keys: " . implode(', ', array_keys($signed)) . "\n";
+    echo "Has signature: " . (isset($signed['signature']) ? 'YES' : 'NO') . "\n";
+    echo "Has certificate: " . (isset($signed['certificate']) ? 'YES' : 'NO') . "\n";
+    echo "Has requester: " . (isset($signed['requester']) ? 'YES' : 'NO') . "\n";
+    
+    // Verify as Saccussalis would
+    $verification = $cm->verifySignedRequest($signed);
+    echo "Verification result: " . ($verification['verified'] ? "VALID ✓" : "INVALID ✗") . "\n";
+    echo "Message: " . $verification['message'] . "\n";
+    
+    if (!$verification['verified']) {
+        echo "\n=== DEBUG: What Saccussalis is verifying ===\n";
+        $payloadToVerify = $signed;
+        unset($payloadToVerify['signature']);
+        unset($payloadToVerify['certificate']);
+        unset($payloadToVerify['requester']);
+        ksort($payloadToVerify);
+        echo "JSON verified: " . json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        
+        echo "\n=== What was signed by VouchMorph ===\n";
+        $signedPayload = $signed;
+        unset($signedPayload['signature']);
+        unset($signedPayload['certificate']);
+        // requester IS included in VouchMorph's signed payload
+        ksort($signedPayload);
+        echo "JSON signed: " . json_encode($signedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        
+        echo "\n=== DIFFERENCES ===\n";
+        $signedKeys = array_keys($signedPayload);
+        $verifyKeys = array_keys($payloadToVerify);
+        echo "Signed keys: " . implode(', ', $signedKeys) . "\n";
+        echo "Verify keys: " . implode(', ', $verifyKeys) . "\n";
+        
+        $missingFromVerify = array_diff($signedKeys, $verifyKeys);
+        $extraInVerify = array_diff($verifyKeys, $signedKeys);
+        
+        if (!empty($missingFromVerify)) {
+            echo "Keys in signed but NOT in verify: " . implode(', ', $missingFromVerify) . "\n";
+        }
+        if (!empty($extraInVerify)) {
+            echo "Keys in verify but NOT in signed: " . implode(', ', $extraInVerify) . "\n";
+        }
     }
 }
-ksort($payloadToVerify);
-$jsonVerified = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-echo "\n5. JSON being verified:\n" . $jsonVerified . "\n";
-echo "   Matches signed JSON: " . ($jsonVerified === $jsonToSign ? "✅ YES" : "❌ NO") . "\n";
+echo "\n=== TEST COMPLETE ===\n";
