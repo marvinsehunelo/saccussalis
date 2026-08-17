@@ -15,6 +15,7 @@
  * - ACCOUNT: Checks accounts table for balance and frozen status
  * - WALLET / BANK-WALLET / MNO-WALLET: Checks wallets + optional PIN
  * - VOUCHER: Still requires PIN (vouchers are PIN-based)
+ * - CARD: Checks cards + linked account balance/frozen status
  * - IDENTITY: Checks identity verification without PIN
  */
 
@@ -570,6 +571,121 @@ try {
     }
 
     // ============================================================
+    // CASE 3.5: CARD VERIFICATION
+    // Card is a credential linked to ONE account — it holds no
+    // balance of its own. Balance/frozen checks are the SAME checks
+    // as CASE 1 (ACCOUNT), just reached via a card lookup first.
+    // ============================================================
+    if ($assetType === 'CARD') {
+        $cardNumber = $input['card_number'] ?? $input['source_identifier'] ?? null;
+        $cvv = $input['cvv'] ?? $input['card_cvv'] ?? null;
+
+        error_log("verify_asset: Verifying CARD: " . ($cardNumber ? substr($cardNumber, -4) : 'null'));
+
+        if (empty($cardNumber)) {
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "card_number (or source_identifier) required for CARD verification"
+            ]);
+            exit;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT
+                c.card_id, c.card_number, c.card_last4, c.cardholder_name,
+                c.network, c.expiry_month, c.expiry_year, c.status AS card_status,
+                c.is_frozen AS card_is_frozen,
+                a.account_id, a.account_number, a.account_type, a.currency,
+                a.balance, a.held_balance, a.is_frozen AS account_is_frozen
+            FROM cards c
+            JOIN accounts a ON a.account_id = c.account_id
+            WHERE c.card_number = :card_number
+            LIMIT 1
+        ");
+        $stmt->execute(['card_number' => $cardNumber]);
+        $card = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$card) {
+            error_log("verify_asset: Card not found: " . substr($cardNumber, -4));
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "Card not found"
+            ]);
+            exit;
+        }
+
+        if ($card['card_status'] !== 'ACTIVE') {
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "Card is not active (status: {$card['card_status']})"
+            ]);
+            exit;
+        }
+
+        if ($card['card_is_frozen'] == true || $card['account_is_frozen'] == true) {
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "Card or linked account is frozen"
+            ]);
+            exit;
+        }
+
+        // Expiry check
+        $now = new DateTime();
+        $expiry = DateTime::createFromFormat('Y-n', "{$card['expiry_year']}-{$card['expiry_month']}");
+        if ($expiry && $expiry < $now) {
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "Card has expired"
+            ]);
+            exit;
+        }
+
+        $availableBalance = (float)$card['balance'] - (float)($card['held_balance'] ?? 0);
+
+        if ($amount > 0 && $availableBalance < $amount) {
+            echo json_encode([
+                "success" => false,
+                "verified" => false,
+                "message" => "Insufficient funds. Available: {$availableBalance}, Requested: {$amount}",
+                "balance" => $availableBalance
+            ]);
+            exit;
+        }
+
+        error_log("verify_asset: CARD verified successfully. card_id={$card['card_id']}, account_id={$card['account_id']}");
+
+        echo json_encode([
+            "success" => true,
+            "verified" => true,
+            "asset_id" => $card['card_id'],
+            "asset_type" => "CARD",
+            "available_balance" => $availableBalance,
+            "balance" => (float)$card['balance'],
+            "held_balance" => (float)($card['held_balance'] ?? 0),
+            "holder_name" => $card['cardholder_name'],
+            "card_last4" => $card['card_last4'],
+            "network" => $card['network'],
+            "linked_account_number" => $card['account_number'],
+            "currency" => $card['currency'] ?? 'BWP',
+            "auth_method" => $cvv ? "card_cvv" : "card_only",
+            "metadata" => [
+                "card_id" => $card['card_id'],
+                "account_id" => $card['account_id'],
+                "account_number" => $card['account_number'],
+                "network" => $card['network'],
+                "expiry" => sprintf('%02d/%d', $card['expiry_month'], $card['expiry_year'])
+            ]
+        ]);
+        exit;
+    }
+
+    // ============================================================
     // CASE 4: IDENTITY VERIFICATION (No PIN required)
     // ============================================================
     if ($assetType === 'IDENTITY') {
@@ -688,7 +804,7 @@ try {
     echo json_encode([
         "success" => false,
         "verified" => false,
-        "message" => "Unknown asset type: $assetType. Supported: ACCOUNT, VOUCHER, WALLET, BANK-WALLET, MNO-WALLET, IDENTITY"
+        "message" => "Unknown asset type: $assetType. Supported: ACCOUNT, VOUCHER, WALLET, BANK-WALLET, MNO-WALLET, CARD, IDENTITY"
     ]);
 
 } catch (Exception $e) {
