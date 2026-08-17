@@ -89,12 +89,17 @@ try {
 
     // ============================================================
     // BRANCH: CHECK ASSET_TYPE FIRST - NOT wallet_id/account_id
+    // ACCOUNT / CARD DEBIT PATH — a card carries no balance of its
+    // own; settling a CARD hold debits the linked account exactly
+    // like an ACCOUNT hold. Only the asset_type value differs so
+    // downstream records (ledger, response) correctly note this
+    // debit originated from a card.
     // ============================================================
-    if ($assetType === 'ACCOUNT' && !empty($hold['account_id'])) {
+    if (($assetType === 'ACCOUNT' || $assetType === 'CARD') && !empty($hold['account_id'])) {
         // ============================================================
-        // ACCOUNT DEBIT PATH
+        // ACCOUNT / CARD DEBIT PATH
         // ============================================================
-        error_log("SACCUSSALIS NOTIFY_DEBIT: Processing ACCOUNT debit for account_id={$hold['account_id']}");
+        error_log("SACCUSSALIS NOTIFY_DEBIT: Processing {$assetType} debit for account_id={$hold['account_id']}");
         
         $stmt = $pdo->prepare("
             SELECT balance, held_balance 
@@ -130,7 +135,13 @@ try {
         $updatedAsset = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $assetId = $hold['account_id'];
-        $assetType = 'ACCOUNT';
+        // Preserve the real originating asset_type (ACCOUNT or CARD)
+        // instead of hardcoding 'ACCOUNT' — this value flows into the
+        // ledger_entries.debit_account string and the response
+        // payload below, both of which should honestly reflect that
+        // this debit came from a card, not silently relabel it.
+        // $assetType already holds the correct value from $hold['asset_type']
+        // read earlier in this file — no reassignment needed here.
 
     } elseif ($assetType === 'WALLET' && !empty($hold['wallet_id'])) {
         // ============================================================
