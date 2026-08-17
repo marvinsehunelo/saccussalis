@@ -4,6 +4,7 @@
  * Place, release, and debit holds on account or wallet funds
  * 
  * FIXED: Only sets account_id OR wallet_id based on asset_type, never both
+ * UPDATED: Added CARD support for holds (cards link to accounts)
  */
 
 require_once __DIR__ . '/../../db.php';
@@ -131,7 +132,10 @@ try {
 
             $holdAmount = (float)$hold['amount'];
 
-            if ($hold['asset_type'] === 'ACCOUNT' && $hold['account_id']) {
+            // EDIT 1: CARD holds settle against the linked account's balance —
+            // same accounts table update as a plain ACCOUNT hold, since
+            // a card carries no balance of its own.
+            if (($hold['asset_type'] === 'ACCOUNT' || $hold['asset_type'] === 'CARD') && $hold['account_id']) {
                 $stmt = $pdo->prepare("
                     UPDATE accounts
                     SET held_balance = GREATEST(0, COALESCE(held_balance, 0) - :amount)
@@ -220,7 +224,9 @@ try {
 
             $holdAmount = (float)$hold['amount'];
 
-            if ($hold['asset_type'] === 'ACCOUNT' && $hold['account_id']) {
+            // EDIT 2: CARD holds debit against the linked account's balance —
+            // same accounts table update as a plain ACCOUNT hold.
+            if (($hold['asset_type'] === 'ACCOUNT' || $hold['asset_type'] === 'CARD') && $hold['account_id']) {
                 $stmt = $pdo->prepare("
                     UPDATE accounts
                     SET balance = balance - :amount,
@@ -562,11 +568,138 @@ try {
         ];
         send_signed_response($responsePayload);
 
+    // ================================================================
+    // EDIT 3: CARD branch - new asset_type support for holds
+    // ================================================================
+    } elseif ($assetType === 'CARD') {
+        error_log("HOLD: Processing CARD hold for: " . substr($identifier ?? '', -4));
+
+        if (!$identifier) {
+            echo json_encode([
+                "status" => "ERROR",
+                "hold_placed" => false,
+                "message" => "No card_number/source_identifier provided for CARD hold"
+            ]);
+            exit;
+        }
+
+        // Card carries no balance of its own — look it up, then check
+        // and update the LINKED ACCOUNT's balance, same as the ACCOUNT
+        // branch above.
+        $stmt = $pdo->prepare("
+            SELECT
+                c.card_id, c.card_number, c.card_last4, c.status AS card_status,
+                c.is_frozen AS card_is_frozen,
+                a.account_id, a.account_number, a.balance, a.held_balance,
+                a.is_frozen AS account_is_frozen
+            FROM cards c
+            JOIN accounts a ON a.account_id = c.account_id
+            WHERE c.card_number = :identifier
+            LIMIT 1
+        ");
+        $stmt->execute([':identifier' => $identifier]);
+        $card = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$card) {
+            error_log("HOLD: Card not found: " . substr($identifier, -4));
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Card not found"]);
+            exit;
+        }
+
+        if ($card['card_status'] !== 'ACTIVE') {
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Card is not active (status: {$card['card_status']})"]);
+            exit;
+        }
+
+        if (!empty($card['card_is_frozen']) || !empty($card['account_is_frozen'])) {
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Card or linked account is frozen"]);
+            exit;
+        }
+
+        $accountId = $card['account_id'];
+        $balance = (float)$card['balance'];
+        $heldBalance = (float)($card['held_balance'] ?? 0);
+        $availableBalance = $balance - $heldBalance;
+
+        error_log("Card found: card_id={$card['card_id']}, linked account_id={$accountId}, Available={$availableBalance}");
+
+        if ($availableBalance < $amount) {
+            echo json_encode([
+                "status" => "ERROR",
+                "hold_placed" => false,
+                "message" => "Insufficient balance. Available: {$availableBalance}, Required: {$amount}"
+            ]);
+            exit;
+        }
+
+        $pdo->beginTransaction();
+        try {
+            // Same held_balance update as a plain ACCOUNT hold — the
+            // card is just how this hold was authorized, not a
+            // separate balance to track.
+            $stmt = $pdo->prepare("
+                UPDATE accounts
+                SET held_balance = COALESCE(held_balance, 0) + :amount
+                WHERE account_id = :account_id
+            ");
+            $stmt->execute([':amount' => $amount, ':account_id' => $accountId]);
+
+            error_log("Account held_balance updated via CARD: account_id={$accountId}, amount={$amount}");
+
+            // asset_type = 'CARD' so downstream (release/debit, and
+            // callers reading the response) know this hold originated
+            // from a card, while account_id still points at the real
+            // balance-holding row — exactly what the RELEASE/DEBIT
+            // fixes above now correctly handle.
+            $stmt = $pdo->prepare("
+                INSERT INTO financial_holds
+                (account_id, wallet_id, amount, hold_reference, session_id, status, expires_at, created_at, asset_type, requester, foreign_bank)
+                VALUES
+                (:account_id, NULL, :amount, :hold_reference, :session_id, 'ACTIVE', :expires_at, NOW(), 'CARD', :requester, :foreign_bank)
+            ");
+            $stmt->execute([
+                ':account_id' => $accountId,
+                ':amount' => $amount,
+                ':hold_reference' => $holdReference,
+                ':session_id' => $holdReference,
+                ':expires_at' => $expiry,
+                ':requester' => $requester,
+                ':foreign_bank' => $destinationInstitution
+            ]);
+
+            $holdId = $pdo->lastInsertId();
+            $pdo->commit();
+
+            error_log("CARD hold placed successfully: hold_id={$holdId}, card_id={$card['card_id']}, account_id={$accountId}, reference={$holdReference}");
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            error_log("HOLD: PLACE transaction rolled back for card, account_id={$accountId}, reference={$holdReference}: " . $e->getMessage());
+            echo json_encode(["status" => "ERROR", "hold_placed" => false, "message" => "Database error: " . $e->getMessage()]);
+            exit;
+        }
+
+        $responsePayload = [
+            "status" => "SUCCESS",
+            "hold_placed" => true,
+            "hold_reference" => $holdReference,
+            "session_id" => $holdReference,
+            "hold_id" => $holdId,
+            "asset_type" => "CARD",
+            "account_id" => $accountId,
+            "card_id" => $card['card_id'],
+            "amount" => $amount,
+            "available_balance" => $availableBalance - $amount,
+            "message" => "Hold placed successfully on CARD",
+            "requester" => $requester
+        ];
+        send_signed_response($responsePayload);
+
     } else {
         echo json_encode([
             "status" => "ERROR",
             "hold_placed" => false,
-            "message" => "Unsupported asset_type: {$assetType}. Supported: ACCOUNT, WALLET"
+            "message" => "Unsupported asset_type: {$assetType}. Supported: ACCOUNT, WALLET, CARD"
         ]);
         exit;
     }
