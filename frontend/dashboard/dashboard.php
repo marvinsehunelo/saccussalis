@@ -94,6 +94,18 @@ $token = $_SESSION['authToken'];
         margin-right: 10px;
     }
 
+    .phone-badge {
+        font-size: 11px;
+        padding: 3px 8px;
+        background: none;
+        color: var(--color-fg-primary);
+        font-weight: 700;
+        border-radius: 0;
+        border: 1px solid var(--color-fg-secondary);
+        display: inline-block;
+        margin-right: 10px;
+    }
+
     .summary-box {
         background: var(--color-accent);
         color: var(--color-bg-primary);
@@ -379,6 +391,7 @@ $token = $_SESSION['authToken'];
         <h1 id="username">SACCUSSALIS PRIVATE BANK</h1>
         <div class="header-actions">
             <span class="role-badge" id="userRole">CLIENT</span>
+            <span class="phone-badge" id="userPhone">Phone: --</span>
             <button class="vogue-button secondary" onclick="logout()">Logout</button>
         </div>
     </header>
@@ -652,6 +665,7 @@ function fetchDashboardData() {
 
         document.getElementById('username').textContent = 'Saccussalis Private Bank';
         document.getElementById('userRole').textContent = data.role ? data.role.toUpperCase() : 'CLIENT';
+        document.getElementById('userPhone').textContent = 'Phone: ' + (data.userPhone || 'N/A');
         document.getElementById('totalBalance').textContent = formatCurrency(data.totalBalance);
 
         renderAccounts(data.accounts);
