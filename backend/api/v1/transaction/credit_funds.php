@@ -60,6 +60,26 @@ $destinationAssetType = strtoupper($input['destination_asset_type'] ?? $input['a
 $phone = $input['phone'] ?? $input['destination_phone'] ?? $input['beneficiary_phone'] ?? $input['wallet_phone'] ?? null;
 $accountNumber = $input['account_number'] ?? $input['destination_account'] ?? $input['account'] ?? null;
 
+// ============================================================
+// REJECT UNRESOLVED TEMPLATE PLACEHOLDERS BEFORE THEY REACH THE DB
+// Caller integrations sometimes forget to substitute values like
+// "REPLACE_WITH_REAL_RECEIVING_ACCOUNT_NUMBER" into settlement
+// payloads. Catch that here with a clear message instead of letting
+// it fall through to a raw SQLSTATE error from a column-length limit.
+// ============================================================
+foreach (['account_number' => $accountNumber, 'phone' => $phone] as $placeholderField => $placeholderValue) {
+    if ($placeholderValue !== null && stripos($placeholderValue, 'REPLACE_WITH_') === 0) {
+        error_log("SACCUSSALIS CREDIT_FUNDS: Rejected unresolved placeholder in {$placeholderField}: {$placeholderValue}");
+        http_response_code(400);
+        echo json_encode([
+            'status' => 'error',
+            'processed' => false,
+            'message' => "Invalid {$placeholderField}: received an unresolved template placeholder ('{$placeholderValue}') instead of a real value. Check how the settlement payload is built on the caller's side."
+        ]);
+        exit;
+    }
+}
+
 if (!$amount || !$fromBank) {
     http_response_code(400);
     echo json_encode([
@@ -168,7 +188,22 @@ try {
             $fullName = $input['account_name'] ?? $input['beneficiary_name'] ?? 'Account Holder';
             $email = $input['email'] ?? $accountNumber . '@saccussalis.bw';
             $userPhone = $input['beneficiary_phone'] ?? $input['phone'] ?? $accountNumber;
-            
+
+            // users.phone is VARCHAR(32) - falling back to $accountNumber above
+            // can overflow that column and previously surfaced as a raw
+            // SQLSTATE[22001] error. Reject with a clear message instead.
+            if (strlen($userPhone) > 32) {
+                $pdo->rollBack();
+                error_log("SACCUSSALIS CREDIT_FUNDS: Computed phone value too long (" . strlen($userPhone) . " chars): {$userPhone}");
+                http_response_code(400);
+                echo json_encode([
+                    'status' => 'error',
+                    'processed' => false,
+                    'message' => "Cannot create account: no usable phone number. '{$userPhone}' is " . strlen($userPhone) . " characters, exceeds the 32-character limit for a phone number. Pass a valid phone or beneficiary_phone field."
+                ]);
+                exit;
+            }
+
             $stmt = $pdo->prepare("
                 INSERT INTO users (full_name, email, phone, password_hash, status, created_at)
                 VALUES (:full_name, :email, :phone, :password_hash, 'active', NOW())
