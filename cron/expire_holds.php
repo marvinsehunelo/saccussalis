@@ -20,7 +20,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/../backend/db.php';
 require_once __DIR__ . '/../lib/hold_release.php';
 
 const JOB          = 'expire_holds';
