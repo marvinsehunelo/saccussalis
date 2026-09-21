@@ -1,123 +1,138 @@
 <?php
-// zurubank/backend/transactions/external_transfer.php
+// saccussalis/backend/transactions/external_transfer.php
+//
+// A signed-in SaccusSalis customer sends money to an account at another
+// bank. The transfer goes to the central bank, which settles it between
+// the banks' settlement accounts; the outcome comes back to
+// backend/api/bank_callback.php.
+//
+// Flow: lock the customer's account -> debit amount + fee -> record the
+// transaction as pending -> submit to the central bank -> commit only if
+// the central bank accepted it. If the central bank refuses or cannot be
+// reached, everything is rolled back: the customer is never left debited
+// for a transfer that was not queued.
+//
+// Settings (Railway variables):
+//   CENTRAL_BANK_URL         default https://centralbank-production.up.railway.app
+//   CENTRAL_BANK_API_SECRET  SaccusSalis' signing secret at the central bank (required)
+//   SACCUSSALIS_PUBLIC_URL   default https://saccussalis-production.up.railway.app
+//
+// Accepts what the dashboard sends (source, external_account, amount,
+// bank_name) and the explicit form (recipient_account_number,
+// recipient_bank_code). Replies with both "status" and "success".
 if (session_status() === PHP_SESSION_NONE) session_start();
 header('Content-Type: application/json');
+require_once __DIR__ . '/../db.php';
 
-require_once __DIR__ . '/../config/db.php';      // 
-require_once __DIR__ . '/../config/hmac.php';    // function generate_hmac()
+const SACCUSSALIS_CODE = 'SACCUSSALIS';
 
-// Central bank configuration
-$CENTRAL_BANK_URL = 'http://localhost/centralbank/api/submit_transfer.php';
-$CENTRAL_BANK_SECRET = 'supersecret-for-zuru';
-$CENTRAL_BANK_CODE = 'ZUR001'; // ZuruBank code at central bank
+function reply(int $code, bool $ok, string $message, array $extra = []): void {
+    http_response_code($code);
+    echo json_encode(['status' => $ok ? 'success' : 'error', 'success' => $ok, 'message' => $message] + $extra);
+    exit;
+}
+
+// Bank names the dashboard offers, mapped to central bank codes.
+function bank_code_for(string $nameOrCode): ?string {
+    $k = strtolower(preg_replace('/[^a-z]/i', '', $nameOrCode));
+    $map = [
+        'zurubank' => 'ZURUBANK', 'zuru' => 'ZURUBANK',
+        'absa' => 'ABSA', 'absabank' => 'ABSA', 'absabankbotswana' => 'ABSA',
+        'cazacom' => 'CAZACOM', 'cazacommobilemoney' => 'CAZACOM',
+        'mtn' => 'MTN', 'mtnmomo' => 'MTN', 'mtnmobilemoney' => 'MTN',
+        'saccussalis' => 'SACCUSSALIS', 'saccussalisbank' => 'SACCUSSALIS',
+    ];
+    return $map[$k] ?? null;
+}
+
+$userId = $_SESSION['user_id'] ?? ($_SESSION['user']['id'] ?? null);
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') reply(405, false, 'Method not allowed');
+if (!$userId) reply(401, false, 'Please sign in again.');
+
+$source = trim((string)($_POST['source'] ?? ''));
+$recipientAccount = trim((string)($_POST['recipient_account_number'] ?? $_POST['external_account'] ?? ''));
+$bankInput = (string)($_POST['recipient_bank_code'] ?? $_POST['bank_name'] ?? $_POST['recipient_bank_name'] ?? '');
+$recipientBank = bank_code_for($bankInput) ?? strtoupper(trim($bankInput));
+$amount = round((float)($_POST['amount'] ?? 0), 2);
+
+if ($source === '' || $recipientAccount === '' || $recipientBank === '' || $amount <= 0) reply(400, false, 'Missing or invalid transfer details.');
+if ($recipientBank === SACCUSSALIS_CODE) reply(400, false, 'That account is at SaccusSalis. Use an internal transfer instead.');
+if (!in_array($recipientBank, ['ZURUBANK', 'ABSA', 'CAZACOM', 'MTN'], true)) reply(400, false, 'Unknown recipient bank.');
+
+$secret = getenv('CENTRAL_BANK_API_SECRET');
+if (!$secret) { error_log('[external_transfer] CENTRAL_BANK_API_SECRET not set'); reply(503, false, 'Interbank transfers are not available right now.'); }
+$centralUrl = rtrim(getenv('CENTRAL_BANK_URL') ?: 'https://centralbank-production.up.railway.app', '/') . '/api/submit_transfer.php';
+$callbackUrl = rtrim(getenv('SACCUSSALIS_PUBLIC_URL') ?: 'https://saccussalis-production.up.railway.app', '/') . '/backend/api/bank_callback.php';
+
+// Same fee the dashboard shows the customer: 1.5%, minimum P2. It stays with SaccusSalis.
+$fee = max(2.00, round($amount * 0.015, 2));
+$totalDebit = $amount + $fee;
+$reference = 'SAC' . gmdate('ymdHis') . strtoupper(bin2hex(random_bytes(3)));   // 21 chars, unique
 
 try {
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        http_response_code(405);
-        echo json_encode(['success'=>false,'message'=>'Method not allowed']);
-        exit;
-    }
-
-    // Check login
-    $logged_in_user_id = $_SESSION['user']['id'] ?? null;
-    $api_token = $_SESSION['authToken'] ?? null;
-
-    if (!$logged_in_user_id || !$api_token) {
-        throw new Exception('User not logged in or auth token missing.');
-    }
-
-    // Grab POST data
-    $source_account      = $_POST['source'] ?? null;
-    $recipient_bank_name = $_POST['recipient_bank_name'] ?? null;
-    $recipient_bank_code = $_POST['recipient_bank_code'] ?? null;
-    $recipient_account   = $_POST['recipient_account_number'] ?? null;
-    $amount              = isset($_POST['amount']) ? (float)$_POST['amount'] : null;
-
-    if (!$source_account || !$recipient_bank_name || !$recipient_bank_code || !$recipient_account || !$amount || $amount <= 0) {
-        throw new Exception('Missing or invalid input data.');
-    }
-
-    // Start transaction
     $pdo->beginTransaction();
+    $stmt = $pdo->prepare("SELECT account_id, balance, is_frozen FROM accounts WHERE account_number = ? AND user_id = ? FOR UPDATE");
+    $stmt->execute([$source, $userId]);
+    $acc = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$acc) throw new DomainException('Source account not found.');
+    if (!empty($acc['is_frozen']) && $acc['is_frozen'] !== 'f') throw new DomainException('This account is frozen.');
+    if ((float)$acc['balance'] < $totalDebit) throw new DomainException(sprintf('Insufficient balance: P%.2f needed including the P%.2f fee.', $totalDebit, $fee));
 
-    // Check ownership & balance
-    $stmt = $pdo->prepare("SELECT account_id, user_id, balance FROM accounts WHERE account_number=? AND user_id=? FOR UPDATE");
-    $stmt->execute([$source_account, $logged_in_user_id]);
-    $source = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$source) {
-        throw new Exception('Source account not found or not owned by user.');
-    }
-    if ($source['balance'] < $amount) {
-        throw new Exception('Insufficient balance.');
-    }
-
-    // Debit source account
-    $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE account_id=?");
-    $stmt->execute([$amount, $source['account_id']]);
-
-    // Log transaction
-    $stmt = $pdo->prepare("
-        INSERT INTO transactions (account_id, user_id, type, amount, description, status, created_at)
-        VALUES (?, ?, 'transfer', ?, ?, 'pending', NOW())
+    $pdo->prepare("UPDATE accounts SET balance = balance - ?, updated_at = NOW() WHERE account_id = ?")->execute([$totalDebit, $acc['account_id']]);
+    $ins = $pdo->prepare("
+        INSERT INTO transactions (user_id, reference, from_account, to_account, amount, fee_amount, type, direction, channel, status, notes)
+        VALUES (?, ?, ?, ?, ?, ?, 'interbank_transfer', 'out', 'central_bank', 'pending', ?)
+        RETURNING transaction_id
     ");
-    $description = "External transfer to {$recipient_bank_name} ({$recipient_account})";
-    $stmt->execute([$source['account_id'], $logged_in_user_id, $amount, $description]);
-    $transaction_id = $pdo->lastInsertId();
+    $ins->execute([$userId, $reference, $source, $recipientAccount, $amount, $fee, "To {$recipientBank} account {$recipientAccount}"]);
+    $txId = (int)$ins->fetchColumn();
 
-    // Insert into external_transfer_queue
-    $stmt = $pdo->prepare("
-        INSERT INTO external_transfer_queue 
-        (transaction_id, user_id, source_account, recipient_bank_name, recipient_bank_code, recipient_account, amount, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_central_bank', NOW())
-    ");
-    $stmt->execute([$transaction_id, $logged_in_user_id, $source_account, $recipient_bank_name, $recipient_bank_code, $recipient_account, $amount]);
-
-    // Prepare payload for central bank
     $payload = [
-        'sender_bank_code'        => $CENTRAL_BANK_CODE,
-        'sender_account'          => $source_account,
-        'recipient_bank_code'     => $recipient_bank_code,
-        'recipient_account'       => $recipient_account,
-        'amount'                  => $amount,
-        'reference_code'          => $transaction_id,
-        'origin_transaction_id'   => $transaction_id,
-        'origin_callback_url'     => 'http://localhost/zurubank/backend/api/bank_callback.php',
-        'timestamp'               => time()
+        'sender_bank_code' => SACCUSSALIS_CODE,
+        'sender_account' => $source,
+        'recipient_bank_code' => $recipientBank,
+        'recipient_account' => $recipientAccount,
+        'amount' => $amount,
+        'fee' => 0,
+        'reference_code' => $reference,
+        'origin_transaction_id' => (string)$txId,
+        'origin_callback_url' => $callbackUrl,
+        'timestamp' => time(),
     ];
-
-    $signature = generate_hmac($payload, $CENTRAL_BANK_SECRET);
-
-    // Send to central bank
-    $ch = curl_init($CENTRAL_BANK_URL);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/x-www-form-urlencoded',
-        "Authorization: Bearer {$api_token}",
-        "X-Request-Signature: {$signature}"
+    $raw = json_encode($payload, JSON_UNESCAPED_SLASHES);
+    $ch = curl_init($centralUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POSTFIELDS => $raw,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: HMAC ' . SACCUSSALIS_CODE . ':' . hash_hmac('sha256', $raw, $secret)],
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT => 15,
     ]);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
-    $centralResp = curl_exec($ch);
-    $curlErr = curl_error($ch);
+    $body = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
     curl_close($ch);
+    $resp = json_decode((string)$body, true) ?: [];
 
-    if ($curlErr) {
-        // Rollback ZuruBank DB changes
+    if ($err || !in_array($code, [200, 202], true) || empty($resp['success'])) {
         $pdo->rollBack();
-        throw new Exception('Central bank connection error: '.$curlErr);
+        error_log("[external_transfer] central bank refused {$reference}: HTTP {$code} {$err} " . substr((string)$body, 0, 300));
+        reply(502, false, 'The central bank did not accept the transfer' . (!empty($resp['message']) ? ': ' . $resp['message'] : '.') . ' You have not been charged.');
     }
 
+    $pdo->prepare("UPDATE transactions SET notes = ?, updated_at = NOW() WHERE transaction_id = ?")
+        ->execute(["To {$recipientBank} account {$recipientAccount}; central bank transfer " . ($resp['transfer_id'] ?? '?'), $txId]);
     $pdo->commit();
 
-    echo json_encode([
-        'success' => true,
-        'message' => 'Transfer submitted to Central Bank. Pending approval.',
-        'transaction_id' => $transaction_id,
-        'central_response' => json_decode($centralResp,true) ?: $centralResp
+    reply(200, true, sprintf('Transfer of P%.2f to %s submitted. It will complete when the central bank settles it.', $amount, $recipientBank), [
+        'transaction_id' => $txId, 'reference' => $reference, 'fee' => $fee, 'central_transfer_id' => $resp['transfer_id'] ?? null,
     ]);
-} catch (Exception $e) {
-    if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
-    http_response_code(400);
-    echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+} catch (DomainException $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    reply(400, false, $e->getMessage());
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    error_log('[external_transfer] ' . $e->getMessage());
+    reply(500, false, 'The transfer could not be sent. You have not been charged.');
 }
