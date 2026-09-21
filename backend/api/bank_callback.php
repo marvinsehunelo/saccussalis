@@ -16,6 +16,7 @@
 //      recipient approved -> the named SaccusSalis account is credited
 header('Content-Type: application/json');
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/settlement_store.php';
 
 function reply(int $code, string $status, string $message): void {
     http_response_code($code);
@@ -81,10 +82,15 @@ try {
         } else {
             throw new DomainException('Unknown status ' . $status);
         }
+        saccussalis_desk($pdo)->onSenderNotice($n);
     } else {
         if ($status !== 'approved') { $pdo->commit(); reply(200, 'success', 'Nothing to credit'); }
         if ($amount <= 0) throw new DomainException('Invalid amount');
         $account = (string)($n['recipient_account_number'] ?? '');
+        // VouchMorph settlement money lands in the bank's own clearing account.
+        if (SettlementDesk::isInternal($account)) {
+            saccussalis_settlement_store($pdo)['ensure_account']($account, 'VouchMorph settlement');
+        }
         $stmt = $pdo->prepare("SELECT account_id, user_id FROM accounts WHERE account_number = ? FOR UPDATE");
         $stmt->execute([$account]);
         $acc = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -96,6 +102,8 @@ try {
             VALUES (?, ?, ?, ?, ?, 'interbank_transfer', 'in', 'central_bank', 'completed', ?)
         ")->execute([$acc['user_id'], 'CB-' . $transferId, (string)($n['from_account'] ?? ''), $account, $amount,
                      'From ' . ($n['from_bank_code'] ?? '?') . ' via central bank transfer ' . $transferId]);
+        saccussalis_desk($pdo)->recordReceipt((string)($n['reference_code'] ?? ('CB-' . $transferId)), $amount,
+            (string)($n['from_bank_code'] ?? ''), $account, 'CENTRAL_BANK', 'CB-' . $transferId);
         $msg = 'Recipient credited';
     }
     $pdo->commit();
