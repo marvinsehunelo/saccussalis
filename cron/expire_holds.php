@@ -78,6 +78,8 @@ try {
 
         foreach ($holds as $hold) {
             try {
+                // Each item is independent: a failure rolls back only this item.
+                $pdo->exec('SAVEPOINT expiry_item');
                 // A live code against a dead hold would be redeemable with
                 // nothing behind it. Void first, release second.
                 void_codes_for_hold($pdo, $hold['hold_reference'], 'HOLD_EXPIRED');
@@ -95,7 +97,9 @@ try {
                 } else {
                     $skipped++;
                 }
+                $pdo->exec('RELEASE SAVEPOINT expiry_item');
             } catch (Throwable $e) {
+                try { $pdo->exec('ROLLBACK TO SAVEPOINT expiry_item'); } catch (Throwable $ignore) {}
                 // One bad hold must not abort the batch. Note it, carry on;
                 // the transaction still commits the rest.
                 $failed++;
@@ -105,7 +109,7 @@ try {
 
         $pdo->commit();
 
-        if (count($holds) < BATCH_SIZE) {
+        if (count($holds) < BATCH_SIZE || $failed >= BATCH_SIZE) {
             break;
         }
     }
