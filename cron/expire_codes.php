@@ -93,11 +93,14 @@ try {
 
         foreach ($tokens as $t) {
             try {
+                // Each item is independent: a failure rolls back only this item.
+                $pdo->exec('SAVEPOINT expiry_item');
                 // Mid-dispense. Never void underneath a machine counting notes.
                 if (!empty($t['processing'])) {
                     $deferred++;
                     error_log('[' . JOB . '] sat ' . $t['sat_number']
                         . ' is PROCESSING at expiry — left for manual review');
+                    $pdo->exec('RELEASE SAVEPOINT expiry_item');
                     continue;
                 }
 
@@ -141,8 +144,10 @@ try {
                         }
                     }
                 }
+                $pdo->exec('RELEASE SAVEPOINT expiry_item');
 
             } catch (Throwable $e) {
+                try { $pdo->exec('ROLLBACK TO SAVEPOINT expiry_item'); } catch (Throwable $ignore) {}
                 $failed++;
                 error_log('[' . JOB . '] FAILED sat ' . ($t['sat_number'] ?? '?') . ': ' . $e->getMessage());
             }
@@ -150,7 +155,7 @@ try {
 
         $pdo->commit();
 
-        if (count($tokens) < BATCH_SIZE) {
+        if (count($tokens) < BATCH_SIZE || $failed >= BATCH_SIZE) {
             break;
         }
     }
