@@ -15,6 +15,8 @@
 
 require_once __DIR__ . '/../../../../db.php';
 require_once __DIR__ . '/../../../../helpers/CertificateManager.php';
+require_once __DIR__ . '/../../../../helpers/virtual_accounts.php';
+require_once __DIR__ . '/../../../../helpers/crypto.php';
 
 header("Content-Type: application/json");
 
@@ -65,136 +67,68 @@ if (isset($input['certificate']) && !empty($input['certificate'])) {
     }
 }
 
+// ============================================================
+// Identity virtual account (VouchMorph identity reservation account).
+// Input: bank_reference (idempotency key), currency, and the identity
+// (identity_type + identity_value). A legacy request carrying only a
+// VouchMorph user_id is keyed as identity "vouchmorph_user".
+// One virtual account per identity per currency: a repeat request for the
+// same identity returns the same account.
+// ============================================================
 $bankReference = $input['bank_reference'] ?? $input['reference'] ?? null;
 $reference = $input['reference'] ?? $bankReference;
-$userId = $input['user_id'] ?? null;
 $currency = strtoupper($input['currency'] ?? 'BWP');
-
-if (empty($bankReference)) {
-    echo json_encode([
-        "success" => false,
-        "message" => "Missing required field: bank_reference"
-    ]);
-    exit;
+$identityType = $input['identity_type'] ?? null;
+$identityValue = $input['identity_value'] ?? null;
+if ((!$identityType || !$identityValue) && !empty($input['user_id'])) {
+    $identityType = 'vouchmorph_user';
+    $identityValue = (string)$input['user_id'];
 }
-
-if (empty($userId)) {
-    echo json_encode([
-        "success" => false,
-        "message" => "Missing required field: user_id"
-    ]);
+if (!$bankReference || !$identityType || $identityValue === null || $identityValue === '') {
+    echo json_encode(['success' => false, 'message' => 'bank_reference and identity_type + identity_value are required']);
     exit;
 }
 
 try {
-    if (!isset($pdo) || !($pdo instanceof PDO)) {
-        throw new Exception("Database connection failed to initialize.");
-    }
+    va_ensure_schema($pdo);
 
-    // ============================================================
-    // Self-provision the reservation_accounts table if it doesn't
-    // exist yet (same pattern used elsewhere in this codebase for
-    // integration-specific tables, e.g. vouchmorph_notifications).
-    // ============================================================
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS reservation_accounts (
-            id SERIAL PRIMARY KEY,
-            bank_reference VARCHAR(128) UNIQUE NOT NULL,
-            reference VARCHAR(128),
-            user_id INT NOT NULL,
-            currency CHAR(3) NOT NULL DEFAULT 'BWP',
-            account_identifier VARCHAR(64) UNIQUE NOT NULL,
-            account_identifier_type VARCHAR(32) NOT NULL DEFAULT 'account_number',
-            status VARCHAR(20) NOT NULL DEFAULT 'active',
-            requester VARCHAR(50),
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    ");
-
-    // ============================================================
-    // IDEMPOTENCY: a repeat call with the same bank_reference
-    // returns the existing reservation account instead of creating
-    // a duplicate.
-    // ============================================================
-    $stmt = $pdo->prepare("
-        SELECT bank_reference, status, account_identifier, account_identifier_type
-        FROM reservation_accounts
-        WHERE bank_reference = :bank_reference
-        LIMIT 1
-    ");
-    $stmt->execute([':bank_reference' => $bankReference]);
-    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($existing) {
-        error_log("reservation/create: Idempotent replay for bank_reference={$bankReference}, returning existing account {$existing['account_identifier']}");
-        echo json_encode([
-            "success" => true,
-            "status" => $existing['status'],
-            "account_identifier" => $existing['account_identifier'],
-            "account_identifier_type" => $existing['account_identifier_type'],
-            "message" => "Reservation account already exists for this bank_reference"
+    $st = $pdo->prepare("SELECT * FROM reservation_accounts WHERE bank_reference = ? LIMIT 1");
+    $st->execute([$bankReference]);
+    if ($existing = $st->fetch(PDO::FETCH_ASSOC)) {
+        send_signed_response([
+            'success' => true, 'status' => $existing['status'] ?? 'active',
+            'account_identifier' => $existing['account_number'] ?? $existing['account_identifier'],
+            'account_identifier_type' => 'account_number', 'virtual_account' => true,
+            'message' => 'Already processed for this bank_reference',
         ]);
         exit;
     }
 
-    // ============================================================
-    // Generate a plausible, unique account number for the
-    // reservation account: RES + zero-padded user_id + random suffix.
-    // Mirrors the SAV/CUR/WAL account-number convention already used
-    // for real accounts in backend/auth/register.php.
-    // ============================================================
-    $accountIdentifier = null;
-    for ($attempt = 0; $attempt < 5; $attempt++) {
-        $candidate = 'RES' . str_pad((string)$userId, 8, '0', STR_PAD_LEFT) . strtoupper(bin2hex(random_bytes(2)));
-        $checkStmt = $pdo->prepare("SELECT 1 FROM reservation_accounts WHERE account_identifier = :aid LIMIT 1");
-        $checkStmt->execute([':aid' => $candidate]);
-        if (!$checkStmt->fetchColumn()) {
-            $accountIdentifier = $candidate;
-            break;
-        }
-    }
+    $va = va_open_or_get($pdo, (string)$identityType, (string)$identityValue, $currency, (string)($requester ?? 'VOUCHMORPH'));
 
-    if (!$accountIdentifier) {
-        throw new Exception("Failed to generate a unique account identifier");
-    }
-
-    $stmt = $pdo->prepare("
-        INSERT INTO reservation_accounts
-            (bank_reference, reference, user_id, currency, account_identifier, account_identifier_type, status, requester, created_at, updated_at)
-        VALUES
-            (:bank_reference, :reference, :user_id, :currency, :account_identifier, 'account_number', 'active', :requester, NOW(), NOW())
-    ");
-    $stmt->execute([
-        ':bank_reference' => $bankReference,
-        ':reference' => $reference,
-        ':user_id' => $userId,
-        ':currency' => $currency,
-        ':account_identifier' => $accountIdentifier,
-        ':requester' => $requester
+    $pdo->prepare("
+        INSERT INTO reservation_accounts (bank_reference, reference, user_id, identity_type, identity_value, account_id, account_number,
+                                          account_identifier, account_identifier_type, currency, status, requester, signature_verified)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'account_number', ?, 'active', ?, ?)
+        ON CONFLICT (bank_reference) DO NOTHING
+    ")->execute([
+        $bankReference, $reference, is_numeric($input['user_id'] ?? null) ? (int)$input['user_id'] : null,
+        strtolower((string)$identityType), (string)$identityValue, $va['account_id'], $va['account_number'], $va['account_number'],
+        $currency, (string)($requester ?? 'VOUCHMORPH'), !empty($isValid) ? 'true' : 'false',
     ]);
 
-    error_log("reservation/create: Created reservation account {$accountIdentifier} for user_id={$userId}, bank_reference={$bankReference}");
-
-    echo json_encode([
-        "success" => true,
-        "status" => "active",
-        "account_identifier" => $accountIdentifier,
-        "account_identifier_type" => "account_number",
-        "message" => "Reservation account created"
+    error_log("RESERVATION CREATE: identity {$identityType}={$identityValue} {$currency} -> virtual account {$va['account_number']} (" . ($va['opened'] ? 'opened' : 'existing') . ")");
+    send_signed_response([
+        'success' => true,
+        'status' => 'active',
+        'account_identifier' => $va['account_number'],
+        'account_identifier_type' => 'account_number',
+        'virtual_account' => true,
+        'opened' => $va['opened'],
+        'message' => $va['opened'] ? 'Identity virtual account opened' : 'Identity virtual account already open',
     ]);
-
-} catch (PDOException $e) {
-    error_log("reservation/create PDO ERROR: " . $e->getMessage());
-    echo json_encode([
-        "success" => false,
-        "message" => "Database error: " . $e->getMessage()
-    ]);
-} catch (Exception $e) {
-    error_log("reservation/create ERROR: " . $e->getMessage());
-    error_log("Trace: " . $e->getTraceAsString());
-    echo json_encode([
-        "success" => false,
-        "message" => $e->getMessage()
-    ]);
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    error_log('RESERVATION CREATE ERROR: ' . $e->getMessage());
+    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
 }
