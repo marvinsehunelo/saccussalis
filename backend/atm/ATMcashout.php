@@ -113,37 +113,10 @@ class ATMCashout {
             'timestamp' => time()
         ];
 
-        if (function_exists('generate_signature')) {
-            $payload['signature'] = generate_signature($payload, 'ATM');
-        }
-
-        $ch = curl_init($this->vouchMorphUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'X-Correlation-ID: ' . uniqid('ATM_', true),
-                'X-Source: ATM_CASHOUT',
-                'X-ATM-ID: ' . ($atmId ?? 'UNKNOWN')
-            ],
-            CURLOPT_POSTFIELDS => json_encode($payload)
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-
-        if ($curlError) {
-            return ['success' => false, 'message' => $curlError];
-        }
-        if ($httpCode < 200 || $httpCode >= 300) {
-            return ['success' => false, 'message' => "HTTP {$httpCode}", 'response' => $response];
-        }
-
-        return ['success' => true, 'response' => json_decode($response, true)];
+        // Signed (HMAC, secret shared with VouchMorph), 45 s wait, and queued for
+        // retry if VouchMorph does not confirm - see helpers/vouchmorph_webhook.php.
+        require_once __DIR__ . '/../helpers/vouchmorph_webhook.php';
+        return vm_notify($this->pdo, $this->vouchMorphUrl, $payload, 'SACCUSSALIS');
     }
 
     /**
