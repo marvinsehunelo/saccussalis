@@ -1,13 +1,14 @@
 <?php
-// CRITICAL TEMPORARY FIX: Suppress PHP errors that might corrupt JSON output.
-error_reporting(0);
+// Errors are logged, never printed: printing them corrupted the JSON the
+// page fetches. (This replaces error_reporting(0), which hid the cause.)
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL);
 
-// Start session only if not already active
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// If user is not logged in, redirect to login
 if (!isset($_SESSION['authToken'])) {
     header("Location: ../public/login.php");
     exit;
@@ -28,15 +29,16 @@ $token = $_SESSION['authToken'];
     /* 1. BLACK & CREAM WHITE PALETTE */
     /* ------------------------------------ */
     :root {
-        --color-bg-primary: #FFFAF0; /* Floral White / Cream White Background */
-        --color-bg-secondary: #FFFFFF; /* Pure White Card Background */
-        --color-fg-primary: #000000; /* Pure Black Text/Primary Accent */
-        --color-fg-secondary: #444444; /* Dark Grey Muted Text */
-        --color-accent: #000000; /* Primary Accent is Black */
-        --color-border-subtle: #E8E8E8; /* Very Light Grey Divider */
-        --color-positive: #008000; /* Standard Green */
-        --color-negative: #CC0000; /* Standard Red */
-        --shadow-sharp: 4px 4px 0 #000000; /* Sharp Black Shadow */
+        --color-bg-primary: #FFFAF0;
+        --color-bg-secondary: #FFFFFF;
+        --color-fg-primary: #000000;
+        --color-fg-secondary: #444444;
+        --color-accent: #000000;
+        --color-border-subtle: #E8E8E8;
+        --color-positive: #008000;
+        --color-negative: #CC0000;
+        --color-held: #B8860B;
+        --shadow-sharp: 4px 4px 0 #000000;
         --font-serif: 'Libre Baskerville', serif;
     }
 
@@ -54,16 +56,12 @@ $token = $_SESSION['authToken'];
         font-weight: 700;
         letter-spacing: 0.5px;
     }
-    
+
     .dashboard-container h1, .card h2, .summary-box h2, .vogue-nav button.active, .role-badge, .vogue-button {
         text-transform: uppercase;
     }
-    
-    .dashboard-container {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 15px;
-    }
+
+    .dashboard-container { max-width: 1200px; margin: 0 auto; padding: 15px; }
 
     header {
         display: flex;
@@ -74,314 +72,176 @@ $token = $_SESSION['authToken'];
         padding-bottom: 10px;
     }
 
-    header h1 {
-        font-size: 28px;
-        margin: 0;
-        font-weight: 700;
-        color: var(--color-fg-primary);
-    }
-    
+    header h1 { font-size: 28px; margin: 0; font-weight: 700; color: var(--color-fg-primary); }
+
     .role-badge {
-        font-size: 11px;
-        padding: 3px 8px;
-        background: var(--color-accent);
-        color: var(--color-bg-primary);
-        text-transform: uppercase;
-        font-weight: 700;
-        border-radius: 0;
-        border: 1px solid var(--color-accent);
-        display: inline-block;
-        margin-right: 10px;
+        font-size: 11px; padding: 3px 8px;
+        background: var(--color-accent); color: var(--color-bg-primary);
+        text-transform: uppercase; font-weight: 700; border-radius: 0;
+        border: 1px solid var(--color-accent); display: inline-block; margin-right: 10px;
     }
 
     .phone-badge {
-        font-size: 11px;
-        padding: 3px 8px;
-        background: none;
-        color: var(--color-fg-primary);
-        font-weight: 700;
-        border-radius: 0;
-        border: 1px solid var(--color-fg-secondary);
-        display: inline-block;
-        margin-right: 10px;
+        font-size: 11px; padding: 3px 8px; background: none;
+        color: var(--color-fg-primary); font-weight: 700; border-radius: 0;
+        border: 1px solid var(--color-fg-secondary); display: inline-block; margin-right: 10px;
     }
 
     .summary-box {
-        background: var(--color-accent);
-        color: var(--color-bg-primary);
-        padding: 20px 30px;
-        margin-bottom: 20px;
-        box-shadow: var(--shadow-sharp);
-        border-radius: 0;
+        background: var(--color-accent); color: var(--color-bg-primary);
+        padding: 20px 30px; margin-bottom: 0; box-shadow: var(--shadow-sharp); border-radius: 0;
     }
 
-    .summary-box h2 {
-        margin: 0 0 5px 0;
-        font-size: 14px;
-        font-weight: 400;
-        color: var(--color-border-subtle);
+    .summary-box h2 { margin: 0 0 5px 0; font-size: 14px; font-weight: 400; color: var(--color-border-subtle); }
+    .summary-box p { margin: 0; font-size: 40px; font-weight: 700; color: var(--color-bg-primary); }
+    .summary-box .sub { font-size: 13px; color: var(--color-border-subtle); font-style: italic; }
+
+    /* Balance strip: accounts · wallets · held · available */
+    .balance-strip {
+        display: grid; grid-template-columns: repeat(4, 1fr);
+        border: 1px solid var(--color-accent); border-top: 0;
+        background: var(--color-bg-secondary); box-shadow: var(--shadow-sharp);
+        margin-bottom: 20px;
     }
-    
-    .summary-box p {
-        margin: 0;
-        font-size: 40px;
-        font-weight: 700;
-        color: var(--color-bg-primary);
+    .balance-strip div { padding: 12px 18px; border-right: 1px solid var(--color-border-subtle); }
+    .balance-strip div:last-child { border-right: 0; }
+    .balance-strip span {
+        display: block; font-size: 11px; letter-spacing: 1px;
+        text-transform: uppercase; color: var(--color-fg-secondary);
     }
+    .balance-strip b { font-size: 22px; font-weight: 700; }
+    .balance-strip b.held { color: var(--color-held); }
+    .balance-strip b.available { color: var(--color-positive); }
 
     .vogue-button {
-        padding: 10px 20px;
-        background: var(--color-accent);
-        color: var(--color-bg-primary);
-        border: 2px solid var(--color-accent);
-        cursor: pointer;
-        font-weight: 700;
-        font-size: 14px;
-        border-radius: 0;
-        text-transform: uppercase;
-        transition: all 0.2s;
-        margin-left: 8px;
+        padding: 10px 20px; background: var(--color-accent); color: var(--color-bg-primary);
+        border: 2px solid var(--color-accent); cursor: pointer; font-weight: 700; font-size: 14px;
+        border-radius: 0; text-transform: uppercase; transition: all 0.2s; margin-left: 8px;
     }
-    
-    .vogue-button:hover {
-        background: var(--color-bg-primary);
-        border-color: var(--color-accent);
-        color: var(--color-accent);
-    }
-    
-    .vogue-button.secondary {
-        background: none;
-        color: var(--color-fg-primary);
-        border: 2px solid var(--color-fg-primary);
-    }
-    
-    .vogue-button.secondary:hover {
-        background: var(--color-accent);
-        color: var(--color-bg-primary);
-    }
+    .vogue-button:hover { background: var(--color-bg-primary); border-color: var(--color-accent); color: var(--color-accent); }
+    .vogue-button.secondary { background: none; color: var(--color-fg-primary); border: 2px solid var(--color-fg-primary); }
+    .vogue-button.secondary:hover { background: var(--color-accent); color: var(--color-bg-primary); }
 
     .vogue-nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-bottom: 20px;
-        padding: 10px;
-        background: var(--color-bg-secondary);
-        box-shadow: var(--shadow-sharp);
-        overflow-x: auto;
-        border: 1px solid var(--color-accent);
+        display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; padding: 10px;
+        background: var(--color-bg-secondary); box-shadow: var(--shadow-sharp);
+        overflow-x: auto; border: 1px solid var(--color-accent);
     }
-    
     .vogue-nav button {
-        padding: 8px 14px;
-        background: none;
-        color: var(--color-fg-secondary);
-        border: 1px solid transparent;
-        font-weight: 400;
-        text-transform: capitalize;
-        transition: all 0.2s;
-        cursor: pointer;
-        border-radius: 0;
-        flex-shrink: 0;
+        padding: 8px 14px; background: none; color: var(--color-fg-secondary);
+        border: 1px solid transparent; font-weight: 400; text-transform: capitalize;
+        transition: all 0.2s; cursor: pointer; border-radius: 0; flex-shrink: 0;
     }
-    
     .vogue-nav button.active {
-        color: var(--color-bg-primary);
-        background-color: var(--color-accent);
-        border: 2px solid var(--color-accent);
-        font-weight: 700;
-        text-transform: uppercase;
+        color: var(--color-bg-primary); background-color: var(--color-accent);
+        border: 2px solid var(--color-accent); font-weight: 700; text-transform: uppercase;
     }
-    
-    .vogue-nav button:not(.active):hover {
-        background-color: var(--color-border-subtle);
-        color: var(--color-fg-primary);
-    }
+    .vogue-nav button:not(.active):hover { background-color: var(--color-border-subtle); color: var(--color-fg-primary); }
 
-    .main-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 20px;
-    }
+    .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 
     .card {
-        background: var(--color-bg-secondary);
-        padding: 25px;
-        box-shadow: var(--shadow-sharp);
-        border-radius: 0;
-        border: 1px solid var(--color-accent);
+        background: var(--color-bg-secondary); padding: 25px; box-shadow: var(--shadow-sharp);
+        border-radius: 0; border: 1px solid var(--color-accent);
     }
-
     .card h2 {
-        margin: 0 0 10px 0;
-        font-size: 20px;
-        font-weight: 700;
-        border-bottom: 2px solid var(--color-accent);
-        padding-bottom: 5px;
+        margin: 0 0 10px 0; font-size: 20px; font-weight: 700;
+        border-bottom: 2px solid var(--color-accent); padding-bottom: 5px;
     }
+    .card .card-note { font-size: 12px; color: var(--color-fg-secondary); font-style: italic; margin: -4px 0 10px; }
 
     .list-item {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px 0;
-        font-size: 15px;
-        border-bottom: 1px dashed var(--color-border-subtle);
+        display: flex; justify-content: space-between; padding: 10px 0;
+        font-size: 15px; border-bottom: 1px dashed var(--color-border-subtle);
     }
+    .list-item:hover { background-color: var(--color-border-subtle); }
 
-    .list-item:hover {
-        background-color: var(--color-border-subtle);
-    }
-    
-    .muted-text {
-        color: var(--color-fg-secondary);
-        font-size: 13px;
-        font-style: italic;
-    }
+    .muted-text { color: var(--color-fg-secondary); font-size: 13px; font-style: italic; }
+    .amount-positive { color: var(--color-positive); font-weight: 700; }
+    .amount-negative { color: var(--color-negative); font-weight: 700; }
+    .amount-held { color: var(--color-held); font-weight: 700; }
 
-    /* E-Wallet specific styles */
-    .ewallet-item {
-        display: grid;
-        grid-template-columns: 1.5fr 1fr 1fr 1fr 1.2fr;
-        gap: 10px;
-        align-items: center;
-        padding: 12px 0;
-        border-bottom: 1px dashed var(--color-border-subtle);
+    /* Accounts and wallets: balance · held · available */
+    .pot-row, .pot-header {
+        display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px;
+        padding: 10px 0; align-items: center; border-bottom: 1px dashed var(--color-border-subtle);
     }
-    
-    .ewallet-item:hover {
-        background-color: var(--color-border-subtle);
+    .pot-header { font-weight: 700; text-transform: uppercase; font-size: 12px;
+        letter-spacing: 1px; border-bottom: 2px solid var(--color-accent); }
+    .pot-row:hover { background-color: var(--color-border-subtle); }
+
+    /* Where your money is */
+    .where-row, .where-header {
+        display: grid; grid-template-columns: 1.4fr 1.2fr 1fr 0.9fr 1.5fr; gap: 10px;
+        padding: 12px 0; align-items: center; border-bottom: 1px dashed var(--color-border-subtle);
     }
-    
-    .ewallet-info {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
+    .where-header { font-weight: 700; text-transform: uppercase; font-size: 12px;
+        letter-spacing: 1px; border-bottom: 2px solid var(--color-accent); }
+
+    .tag {
+        display: inline-block; padding: 3px 10px; font-size: 11px; font-weight: 700;
+        text-transform: uppercase; border: 1px solid var(--color-accent); text-align: center;
     }
-    
-    .ewallet-phone {
-        font-weight: 700;
-        font-size: 16px;
+    .tag.free { color: var(--color-positive); border-color: var(--color-positive); }
+    .tag.held { color: var(--color-held); border-color: var(--color-held); }
+    .tag.out  { color: var(--color-negative); border-color: var(--color-negative); }
+    .tag.in   { color: #0066CC; border-color: #0066CC; }
+
+    /* E-Wallet */
+    .ewallet-item, .ewallet-header {
+        display: grid; grid-template-columns: 0.8fr 1.3fr 1fr 1fr 1.2fr; gap: 10px;
+        align-items: center; padding: 12px 0; border-bottom: 1px dashed var(--color-border-subtle);
     }
-    
-    .ewallet-pin {
-        font-size: 18px;
-        color: var(--color-fg-primary);
-        font-family: monospace;
-        letter-spacing: 3px;
-        font-weight: 700;
-    }
-    
-    .ewallet-status {
-        padding: 4px 12px;
-        font-size: 12px;
-        font-weight: 700;
-        text-transform: uppercase;
-        border: 1px solid var(--color-accent);
-        text-align: center;
-        display: inline-block;
-        justify-self: start;
-    }
-    
-    .status-active {
-        color: var(--color-positive);
-        border-color: var(--color-positive);
-    }
-    
-    .status-inactive {
-        color: var(--color-negative);
-        border-color: var(--color-negative);
-    }
-    
-    .status-pending {
-        color: #FF8C00;
-        border-color: #FF8C00;
-    }
-    
-    .status-redeemed {
-        color: #0066CC;
-        border-color: #0066CC;
-    }
+    .ewallet-header { font-weight: 700; border-bottom: 2px solid var(--color-accent);
+        text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
+    .ewallet-item:hover { background-color: var(--color-border-subtle); }
+    .ewallet-info { display: flex; flex-direction: column; gap: 2px; }
+    .ewallet-phone { font-weight: 700; font-size: 16px; }
+    .ewallet-pin { font-size: 18px; font-family: monospace; letter-spacing: 3px; font-weight: 700; }
+    .ewallet-status { padding: 4px 12px; font-size: 12px; font-weight: 700; text-transform: uppercase;
+        border: 1px solid var(--color-accent); text-align: center; display: inline-block; justify-self: start; }
+    .status-active   { color: var(--color-positive); border-color: var(--color-positive); }
+    .status-inactive { color: var(--color-negative); border-color: var(--color-negative); }
+    .status-pending  { color: #FF8C00; border-color: #FF8C00; }
+    .status-redeemed { color: #0066CC; border-color: #0066CC; }
 
     .form-group label {
-        display: block;
-        font-size: 14px;
-        font-weight: 700;
-        margin-bottom: 5px;
-        color: var(--color-fg-primary);
-        text-transform: capitalize;
+        display: block; font-size: 14px; font-weight: 700; margin-bottom: 5px;
+        color: var(--color-fg-primary); text-transform: capitalize;
     }
-
     .form-group input, .form-group select, .vogue-message-box {
-        width: 100%;
-        padding: 10px;
-        margin-bottom: 15px;
-        border: 1px solid var(--color-fg-secondary);
-        background: var(--color-bg-secondary);
-        color: var(--color-fg-primary);
-        font-size: 16px;
-        box-sizing: border-box;
-        border-radius: 0;
+        width: 100%; padding: 10px; margin-bottom: 15px;
+        border: 1px solid var(--color-fg-secondary); background: var(--color-bg-secondary);
+        color: var(--color-fg-primary); font-size: 16px; box-sizing: border-box; border-radius: 0;
     }
 
     .pin-box {
-        background: var(--color-accent);
-        border: 2px solid var(--color-fg-primary);
-        padding: 15px;
-        margin-top: 15px;
-        text-align: center;
-        font-size: 18px;
-        font-weight: 700;
-        color: var(--color-bg-primary);
-        border-radius: 0;
+        background: var(--color-accent); border: 2px solid var(--color-fg-primary);
+        padding: 15px; margin-top: 15px; text-align: center; font-size: 18px;
+        font-weight: 700; color: var(--color-bg-primary); border-radius: 0;
     }
-    
-    .pin-number {
-        font-size: 28px;
-        color: var(--color-bg-primary);
-        display: block;
-        margin-top: 5px;
-        font-family: var(--font-serif);
-    }
-    
-    .statement-section {
-        grid-column: 1 / -1;
-        margin-top: 20px;
-        padding: 20px;
-        background: var(--color-bg-secondary);
-        border: 1px solid var(--color-accent);
-        box-shadow: var(--shadow-sharp);
-        border-radius: 0;
-    }
-    
-    .statement-section h3 {
-        color: var(--color-fg-primary);
-        border-bottom: 2px solid var(--color-accent);
-        padding-bottom: 5px;
-        margin-top: 0;
-        font-family: var(--font-serif);
-        text-transform: uppercase;
-        font-size: 20px;
-    }
+    .pin-number { font-size: 28px; color: var(--color-bg-primary); display: block; margin-top: 5px; font-family: var(--font-serif); }
 
-    .ewallet-header {
-        display: grid;
-        grid-template-columns: 1.5fr 1fr 1fr 1fr 1.2fr;
-        gap: 10px;
-        padding: 10px 0;
-        font-weight: 700;
-        border-bottom: 2px solid var(--color-accent);
+    .statement-section {
+        grid-column: 1 / -1; margin-top: 20px; padding: 20px;
+        background: var(--color-bg-secondary); border: 1px solid var(--color-accent);
+        box-shadow: var(--shadow-sharp); border-radius: 0;
+    }
+    .statement-section h3 {
+        color: var(--color-fg-primary); border-bottom: 2px solid var(--color-accent);
+        padding-bottom: 5px; margin-top: 0; font-family: var(--font-serif);
+        text-transform: uppercase; font-size: 20px;
     }
 
     @media (max-width: 768px) {
         .main-grid { grid-template-columns: 1fr; gap: 15px; }
         .summary-box p { font-size: 30px; }
-        .ewallet-item, .ewallet-header {
-            grid-template-columns: 1fr;
-            gap: 5px;
+        .balance-strip { grid-template-columns: 1fr 1fr; }
+        .ewallet-item, .ewallet-header, .pot-row, .pot-header, .where-row, .where-header {
+            grid-template-columns: 1fr; gap: 5px;
         }
-        .ewallet-status {
-            justify-self: start;
-        }
+        .ewallet-status { justify-self: start; }
+        .pot-header, .where-header, .ewallet-header { display: none; }
     }
 </style>
 </head>
@@ -397,10 +257,18 @@ $token = $_SESSION['authToken'];
     </header>
 
     <div class="summary-box">
-        <h2>Total Available Balance</h2>
-        <p>$<span id="totalBalance">0.00</span></p>
+        <h2>Available to spend</h2>
+        <p>P<span id="availableBalance">0.00</span></p>
+        <div class="sub">Total held at this bank: P<span id="totalBalance">0.00</span></div>
     </div>
-    
+
+    <div class="balance-strip">
+        <div><span>Accounts</span><b id="stripAccounts">P0.00</b></div>
+        <div><span>Wallets</span><b id="stripWallets">P0.00</b></div>
+        <div><span>Held</span><b class="held" id="stripHeld">P0.00</b></div>
+        <div><span>Available</span><b class="available" id="stripAvailable">P0.00</b></div>
+    </div>
+
     <nav class="vogue-nav">
         <button id="nav-dashboard" class="active" onclick="showScreen('dashboard')">Dashboard</button>
         <button id="nav-ownTransfer" onclick="showScreen('ownTransfer')">Account to Account</button>
@@ -411,22 +279,38 @@ $token = $_SESSION['authToken'];
 
     <div id="content-area">
         <div id="dashboard-view" class="main-grid screen-view">
+
             <div class="card accounts">
                 <h2>Your Accounts</h2>
                 <div id="accountsList"></div>
             </div>
+
+            <div class="card wallets">
+                <h2>Your Wallets</h2>
+                <div class="card-note">Mobile wallets held against your phone number.</div>
+                <div id="walletsList"></div>
+            </div>
+
+            <div class="card where" style="grid-column: 1 / -1; margin-top: 5px;">
+                <h2>Where Your Money Is</h2>
+                <div class="card-note">Every pot of money, which institution is holding it, and where it is going.</div>
+                <div id="whereList"></div>
+            </div>
+
             <div class="card transactions">
                 <h2>Recent Transactions</h2>
                 <div id="transactionsList"></div>
             </div>
-            <!-- E-Wallet Management Card -->
-            <div class="card ewallet-management" style="grid-column: 1 / -1; margin-top: 5px;">
-                <h2>E-Wallet Management</h2>
-                <div id="ewalletList"></div>
-            </div>
-            <div class="card wallet" style="grid-column: 1 / -1; margin-top: 5px;">
+
+            <div class="card wallet">
                 <h2>Pending Wallet Transactions</h2>
                 <div id="walletList"></div>
+            </div>
+
+            <div class="card ewallet-management" style="grid-column: 1 / -1; margin-top: 5px;">
+                <h2>E-Wallet Management</h2>
+                <div class="card-note">Cardless cash you have sent, and cash sent to you.</div>
+                <div id="ewalletList"></div>
             </div>
         </div>
 
@@ -449,10 +333,10 @@ $token = $_SESSION['authToken'];
                 <div id="ownTransferMessage" class="vogue-message-box" style="display: none;"></div>
             </form>
         </div>
-        
+
         <div id="ewalletTransfer-view" class="card screen-view" style="display: none; max-width: 600px; margin: 0 auto;">
             <h2>E-Wallet (Cardless Cash) Transfer</h2>
-            <p class="muted-text" style="margin-bottom: 20px;">Send cash instantly to a mobile number for ATM/agent redemption using a secure PIN.</p>
+            <p class="muted-text" style="margin-bottom: 20px;">Send cash instantly to a mobile number for ATM or agent redemption using a secure PIN.</p>
             <form id="ewalletTransferForm" onsubmit="handleTransfer(event, 'ewalletTransfer')">
                 <div class="form-group">
                     <label for="ewalletTransferSource">Source Account</label>
@@ -493,7 +377,7 @@ $token = $_SESSION['authToken'];
 
         <div id="externalTransfer-view" class="card screen-view" style="display: none; max-width: 600px; margin: 0 auto;">
             <h2>Transfer to Other Bank</h2>
-            <form id="externalTransferForm" onsubmit="submitExternalTransfer(event)">
+            <form id="externalTransferForm">
                 <div class="form-group">
                     <label for="externalTransferSource">From Account</label>
                     <select id="externalTransferSource" required></select>
@@ -516,7 +400,7 @@ $token = $_SESSION['authToken'];
             </form>
         </div>
     </div>
-    
+
     <div class="statement-section">
         <h3>Download Bank Statement</h3>
         <input type="date" id="startDate">
@@ -526,308 +410,350 @@ $token = $_SESSION['authToken'];
 </div>
 
 <script>
-// Use PHP session token
-const token = "<?php echo $token; ?>";
+const token = "<?php echo htmlspecialchars($token, ENT_QUOTES); ?>";
 const BACKEND_ENDPOINT = '../../backend/accounts/dashboard.php';
+const BANK_NAME = 'SaccusSalis Private Bank';
 
-if (!token) {
-    window.location.href = '../public/login.php';
-}
+if (!token) { window.location.href = '../public/login.php'; }
 
-// --- Global State ---
-let accountData = [];
+// --- Global state ---
+let accountData = [];       // accounts, used by the transfer forms
+let walletData = [];
 let currentView = 'dashboard';
 
-// --- Utility Functions ---
+// --- Utilities ---
 function parseResponse(res) {
     return res.text().then(text => {
-        if (!res.ok) {
-            try { return JSON.parse(text); } catch (e) {
-                console.error("Non-OK response failed JSON parse. Raw text:", text);
-                return { status: 'error', message: res.statusText || 'Non-OK server response.' };
-            }
-        }
-        try { return JSON.parse(text); } catch (e) {
-            console.error("Failed to parse JSON response. Received raw text:", text);
+        try { return JSON.parse(text); }
+        catch (e) {
+            console.error('Response was not JSON. Raw text:', text.slice(0, 400));
             return { status: 'error', message: 'Server did not return valid JSON.' };
         }
     });
 }
 
-function formatCurrency(amount) {
-    return parseFloat(amount).toFixed(2);
+function money(amount) { return 'P' + (parseFloat(amount) || 0).toFixed(2); }
+function formatCurrency(amount) { return (parseFloat(amount) || 0).toFixed(2); }
+
+function escapeHtml(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function shortDate(d) {
+    if (!d || d === '0000-00-00 00:00:00') return '';
+    const t = new Date(d);
+    return isNaN(t) ? '' : t.toLocaleDateString();
 }
 
 function showMessage(elementId, message, isSuccess, pin = null) {
     const el = document.getElementById(elementId);
-    if (!el) {
-        console.warn(`showMessage: element with ID "${elementId}" not found.`);
-        return;
-    }
+    if (!el) { console.warn('showMessage: missing element ' + elementId); return; }
     el.innerHTML = '';
-    
-    const statusClass = isSuccess ? 'success' : 'error';
-    el.className = `vogue-message-box ${statusClass}`;
-    el.style.border = `1px solid ${isSuccess ? 'var(--color-positive)' : 'var(--color-negative)'}`;
+    el.className = 'vogue-message-box ' + (isSuccess ? 'success' : 'error');
+    el.style.border = '1px solid ' + (isSuccess ? 'var(--color-positive)' : 'var(--color-negative)');
     el.style.backgroundColor = 'var(--color-bg-primary)';
     el.style.color = isSuccess ? 'var(--color-positive)' : 'var(--color-negative)';
 
     if (isSuccess && pin) {
-        el.innerHTML = `
-            ${message}
-            <div class="pin-box">
-                <span class="muted-text" style="font-weight: 400; font-size: 13px;">ONE-TIME PIN:</span>
-                <span class="pin-number">${pin}</span>
-            </div>
-            <p class="muted-text" style="margin-top: 5px; color: var(--color-bg-primary);">The recipient will need this PIN to withdraw cash.</p>
-        `;
+        el.innerHTML = escapeHtml(message) +
+            '<div class="pin-box"><span class="muted-text" style="font-weight:400;font-size:13px;color:var(--color-bg-primary)">ONE-TIME PIN:</span>' +
+            '<span class="pin-number">' + escapeHtml(pin) + '</span></div>' +
+            '<p class="muted-text" style="margin-top:5px">The recipient needs this PIN to withdraw the cash.</p>';
     } else {
-        el.className = 'vogue-message-box ' + (isSuccess ? 'success' : 'error');
         el.textContent = message;
     }
-
     el.style.display = 'block';
-    const timeout = isSuccess && pin ? 15000 : 6000;
-    setTimeout(() => { el.style.display = 'none'; }, timeout);
+    setTimeout(() => { el.style.display = 'none'; }, isSuccess && pin ? 15000 : 6000);
 }
 
-// --- Screen Management ---
+function safeShowMessage(elementId, message, isSuccess) { showMessage(elementId, message, isSuccess); }
+
+// --- Screens ---
 function showScreen(view) {
     currentView = view;
     document.querySelectorAll('.screen-view').forEach(el => el.style.display = 'none');
-    document.getElementById(view + '-view').style.display = 'block';
-
+    const target = document.getElementById(view + '-view');
+    if (target) target.style.display = view === 'dashboard' ? 'grid' : 'block';
     document.querySelectorAll('.vogue-nav button').forEach(btn => btn.classList.remove('active'));
-    document.getElementById('nav-' + view).classList.add('active');
-    
-    if (view !== 'dashboard') {
-        populateSourceDropdowns(view);
-    }
+    const nav = document.getElementById('nav-' + view);
+    if (nav) nav.classList.add('active');
+    if (view !== 'dashboard') populateSourceDropdowns(view);
 }
 
 function populateSourceDropdowns(view) {
-    const sourceId = view + 'Source';
-    const destId = view + 'Destination';
-    const sourceSelect = document.getElementById(sourceId);
-    
+    const sourceSelect = document.getElementById(view + 'Source');
     if (!sourceSelect) return;
-    
     sourceSelect.innerHTML = '<option value="">Select Account</option>';
 
-    if (view === 'ownTransfer') {
-        const destSelect = document.getElementById(destId);
-        if (destSelect) {
-            destSelect.innerHTML = '<option value="">Select Destination</option>';
-        }
-    }
+    const destSelect = (view === 'ownTransfer') ? document.getElementById(view + 'Destination') : null;
+    if (destSelect) destSelect.innerHTML = '<option value="">Select Destination</option>';
 
     (accountData || []).forEach(acc => {
         const option = document.createElement('option');
         option.value = acc.account_number;
-        option.textContent = `${acc.account_type.toUpperCase()} (Balance: $${formatCurrency(acc.balance)})`;
+        // spendable, not gross: held money cannot be transferred
+        option.textContent = (acc.account_type || '').toUpperCase() +
+            ' (Available: ' + money(acc.available !== undefined ? acc.available : acc.balance) + ')';
         sourceSelect.appendChild(option);
     });
 
-    if (view === 'ownTransfer') {
-        const destSelect = document.getElementById(destId);
-        if (destSelect) {
-            sourceSelect.onchange = function() {
-                destSelect.innerHTML = '<option value="">Select Destination</option>';
-                const selectedSource = this.value;
-                accountData.forEach(acc => {
-                    if (acc.account_number !== selectedSource) {
-                        const option = document.createElement('option');
-                        option.value = acc.account_number;
-                        option.textContent = `${acc.account_type.toUpperCase()} (Balance: $${formatCurrency(acc.balance)})`;
-                        destSelect.appendChild(option);
-                    }
-                });
-            };
-            if (sourceSelect.value) {
-                sourceSelect.onchange();
-            }
-        }
+    if (destSelect) {
+        sourceSelect.onchange = function () {
+            destSelect.innerHTML = '<option value="">Select Destination</option>';
+            const selected = this.value;
+            accountData.forEach(acc => {
+                if (acc.account_number !== selected) {
+                    const o = document.createElement('option');
+                    o.value = acc.account_number;
+                    o.textContent = (acc.account_type || '').toUpperCase() +
+                        ' (Available: ' + money(acc.available !== undefined ? acc.available : acc.balance) + ')';
+                    destSelect.appendChild(o);
+                }
+            });
+        };
+        if (sourceSelect.value) sourceSelect.onchange();
     }
 }
 
-// --- Core Data Fetching ---
+// --- Data ---
 function fetchDashboardData() {
-    fetch(BACKEND_ENDPOINT + '?token=' + token + '&action=fetch_data')
-    .then(res => parseResponse(res))
+    fetch(BACKEND_ENDPOINT + '?token=' + encodeURIComponent(token) + '&action=fetch_data')
+    .then(parseResponse)
     .then(data => {
         if (data.status !== 'success') {
-            safeShowMessage('totalBalance', data.message || 'Error fetching data.', false);
-            console.error("Dashboard Fetch Error:", data.message);
+            console.error('Dashboard fetch error:', data.message);
             return;
         }
 
         accountData = data.accounts || [];
+        walletData = data.wallets || [];
 
-        document.getElementById('username').textContent = 'Saccussalis Private Bank';
-        document.getElementById('userRole').textContent = data.role ? data.role.toUpperCase() : 'CLIENT';
+        document.getElementById('username').textContent = data.institution || BANK_NAME;
+        document.getElementById('userRole').textContent = (data.role || 'client').toUpperCase();
         document.getElementById('userPhone').textContent = 'Phone: ' + (data.userPhone || 'N/A');
+
+        const s = data.balanceSummary || {};
+        document.getElementById('availableBalance').textContent = formatCurrency(data.availableBalance);
         document.getElementById('totalBalance').textContent = formatCurrency(data.totalBalance);
+        document.getElementById('stripAccounts').textContent = money(s.accounts);
+        document.getElementById('stripWallets').textContent = money(s.wallets);
+        document.getElementById('stripHeld').textContent = money(s.held);
+        document.getElementById('stripAvailable').textContent = money(s.available);
 
         renderAccounts(data.accounts);
+        renderWallets(data.wallets, data.userPhone, data.institution);
+        renderWhere(data);
         renderTransactions(data.recentTransactions, 'transactionsList', 'type');
+        renderTransactions(data.pendingWalletTransactions, 'walletList', 'transaction_type', true);
         renderEwallets(data.ewallets || []);
-        renderTransactions(data.pendingWalletTransactions, 'walletList', 'id', true);
         loadExternalTransferSources();
+        if (currentView !== 'dashboard') populateSourceDropdowns(currentView);
     })
-    .catch(err => {
-        console.error('Fetch error:', err);
-        safeShowMessage('totalBalance', 'Critical network error. Check console.', false);
-    });
+    .catch(err => console.error('Fetch error:', err));
 }
 
 function renderAccounts(accounts) {
-    const accountsList = document.getElementById('accountsList');
-    accountsList.innerHTML = '';
-    (accounts || []).forEach(acc => {
-        const div = document.createElement('div');
-        div.className = 'list-item';
-        const type = acc.account_type ? acc.account_type.toUpperCase() : 'UNKNOWN';
-        const balance = formatCurrency(acc.balance);
-        div.innerHTML = `
-            <span>${type} <span class="muted-text">(${acc.account_number})</span></span>
-            <span class="amount-positive">$${balance}</span>
-        `;
-        accountsList.appendChild(div);
-    });
-    if (!accounts || accounts.length === 0) {
-        accountsList.innerHTML = '<div class="muted-text" style="padding: 5px 0;">No accounts found.</div>';
-    }
-}
-
-// Render E-Wallets from ewallet_pins table
-function renderEwallets(ewallets) {
-    const ewalletList = document.getElementById('ewalletList');
-    ewalletList.innerHTML = '';
-    
-    if (!ewallets || ewallets.length === 0) {
-        ewalletList.innerHTML = '<div class="muted-text" style="padding: 15px 0; text-align: center;">No e-wallet transactions found for your phone number.</div>';
+    const list = document.getElementById('accountsList');
+    list.innerHTML = '';
+    if (!accounts || !accounts.length) {
+        list.innerHTML = '<div class="muted-text" style="padding:5px 0">No accounts found.</div>';
         return;
     }
-    
-    // Create header
-    const header = document.createElement('div');
-    header.className = 'ewallet-header';
-    header.innerHTML = `
-        <span>Recipient</span>
-        <span>Sender</span>
-        <span>PIN</span>
-        <span>Amount</span>
-        <span>Status</span>
-    `;
-    ewalletList.appendChild(header);
-    
-    (ewallets || []).forEach(wallet => {
+    let html = '<div class="pot-header"><span>Account</span><span>Balance</span><span>Held</span><span>Available</span></div>';
+    accounts.forEach(acc => {
+        const held = parseFloat(acc.held_balance || 0);
+        html += '<div class="pot-row">' +
+            '<span><b>' + escapeHtml((acc.account_type || 'Account').toUpperCase()) + '</b><br>' +
+                '<span class="muted-text">' + escapeHtml(acc.account_number) + '</span></span>' +
+            '<span>' + money(acc.balance) + '</span>' +
+            '<span class="' + (held > 0 ? 'amount-held' : 'muted-text') + '">' + money(held) + '</span>' +
+            '<span class="amount-positive">' + money(acc.available !== undefined ? acc.available : acc.balance) + '</span>' +
+            '</div>';
+    });
+    list.innerHTML = html;
+}
+
+function renderWallets(wallets, phone, institution) {
+    const list = document.getElementById('walletsList');
+    list.innerHTML = '';
+    if (!wallets || !wallets.length) {
+        list.innerHTML = '<div class="muted-text" style="padding:5px 0">No mobile wallet is linked to ' +
+            escapeHtml(phone || 'this profile') + '.</div>';
+        return;
+    }
+    let html = '<div class="pot-header"><span>Wallet</span><span>Balance</span><span>Held</span><span>Available</span></div>';
+    wallets.forEach(w => {
+        const held = parseFloat(w.held_balance || 0);
+        html += '<div class="pot-row">' +
+            '<span><b>' + escapeHtml(w.phone || ('Wallet ' + w.wallet_id)) + '</b><br>' +
+                '<span class="muted-text">' + escapeHtml(institution || BANK_NAME) +
+                (w.status ? ' · ' + escapeHtml(String(w.status).toUpperCase()) : '') + '</span></span>' +
+            '<span>' + money(w.balance) + '</span>' +
+            '<span class="' + (held > 0 ? 'amount-held' : 'muted-text') + '">' + money(held) + '</span>' +
+            '<span class="amount-positive">' + money(w.available !== undefined ? w.available : w.balance) + '</span>' +
+            '</div>';
+    });
+    list.innerHTML = html;
+}
+
+// Every pot of money, who holds it, and where it is going
+function renderWhere(data) {
+    const list = document.getElementById('whereList');
+    const bank = data.institution || BANK_NAME;
+    const rows = [];
+
+    (data.accounts || []).forEach(a => rows.push({
+        what: (a.account_type || 'Account').toUpperCase() + ' · ' + (a.account_number || ''),
+        where: bank, kind: 'Account', cls: (a.held_balance > 0 ? 'held' : 'free'),
+        amount: a.balance,
+        note: a.held_balance > 0 ? money(a.held_balance) + ' of this is held' : 'Fully available'
+    }));
+
+    (data.wallets || []).forEach(w => rows.push({
+        what: 'WALLET · ' + (w.phone || w.wallet_id),
+        where: bank, kind: 'Wallet', cls: (w.held_balance > 0 ? 'held' : 'free'),
+        amount: w.balance,
+        note: w.held_balance > 0 ? money(w.held_balance) + ' of this is held' : 'Fully available'
+    }));
+
+    (data.holds || []).forEach(h => rows.push({
+        what: 'HOLD · ' + (h.hold_reference || ''),
+        where: h.held_by || bank,
+        kind: 'Held' + (h.asset_type ? ' (' + h.asset_type + ')' : ''),
+        cls: 'held', amount: h.amount,
+        note: 'Going to ' + (h.going_to && h.going_to !== '—' ? h.going_to : 'a destination not yet named') +
+              (h.expires_at ? ' · expires ' + shortDate(h.expires_at) : '')
+    }));
+
+    (data.ewallets || []).forEach(e => {
+        if (e.is_redeemed) return;
+        rows.push({
+            what: 'CASH ' + e.direction + ' · ' + (e.counterparty || ''),
+            where: e.institution || bank,
+            kind: e.direction === 'SENT' ? 'Awaiting collection' : 'Waiting for you',
+            cls: e.direction === 'SENT' ? 'out' : 'in',
+            amount: e.amount,
+            note: 'Collect with the PIN at an ATM or agent' +
+                  (e.expires_at ? ' · expires ' + shortDate(e.expires_at) : '')
+        });
+    });
+
+    if (!rows.length) {
+        list.innerHTML = '<div class="muted-text" style="padding:10px 0">Nothing to show yet.</div>';
+        return;
+    }
+
+    let html = '<div class="where-header"><span>What</span><span>Held by</span><span>Type</span><span>Amount</span><span>Note</span></div>';
+    rows.forEach(r => {
+        html += '<div class="where-row">' +
+            '<span><b>' + escapeHtml(r.what) + '</b></span>' +
+            '<span>' + escapeHtml(r.where) + '</span>' +
+            '<span><span class="tag ' + r.cls + '">' + escapeHtml(r.kind) + '</span></span>' +
+            '<span><b>' + money(r.amount) + '</b></span>' +
+            '<span class="muted-text">' + escapeHtml(r.note) + '</span>' +
+            '</div>';
+    });
+    list.innerHTML = html;
+}
+
+function renderTransactions(transactions, listId, typeField, isPending = false) {
+    const list = document.getElementById(listId);
+    list.innerHTML = '';
+    if (!transactions || !transactions.length) {
+        list.innerHTML = '<div class="muted-text" style="padding:5px 0">No ' +
+            (isPending ? 'pending' : 'recent') + ' transactions.</div>';
+        return;
+    }
+    transactions.forEach(tx => {
+        const amount = parseFloat(tx.amount) || 0;
+        const cls = isPending ? 'amount-held' : (amount >= 0 ? 'amount-positive' : 'amount-negative');
+        const shown = isPending ? '-' + money(Math.abs(amount))
+                                : (amount >= 0 ? '+' + money(amount) : '-' + money(Math.abs(amount)));
         const div = document.createElement('div');
-        div.className = 'ewallet-item';
-        
-        // Determine status - handle boolean and string values
-        const isRedeemed = wallet.is_redeemed === true || wallet.is_redeemed === 'true' || wallet.is_redeemed === 1;
-        
-        let statusClass = 'status-pending';
-        let statusText = 'PENDING';
-        
+        div.className = 'list-item';
+        div.innerHTML = '<span>' + escapeHtml(tx[typeField] || 'Transaction') + '</span>' +
+            '<span class="' + cls + '">' + shown +
+            ' <span class="muted-text">(' + escapeHtml(shortDate(tx.created_at)) + ')</span></span>';
+        list.appendChild(div);
+    });
+}
+
+function renderEwallets(ewallets) {
+    const list = document.getElementById('ewalletList');
+    list.innerHTML = '';
+    if (!ewallets || !ewallets.length) {
+        list.innerHTML = '<div class="muted-text" style="padding:15px 0;text-align:center">No cardless cash activity on your number.</div>';
+        return;
+    }
+
+    let html = '<div class="ewallet-header"><span>Direction</span><span>Counterparty</span>' +
+               '<span>PIN</span><span>Amount</span><span>Status</span></div>';
+
+    ewallets.forEach(w => {
+        const isRedeemed = w.is_redeemed === true || w.is_redeemed === 'true' || w.is_redeemed === 1;
+        let statusClass = 'status-pending', statusText = 'PENDING';
+
         if (isRedeemed) {
             statusClass = 'status-redeemed';
-            statusText = 'REDEEMED';
-            if (wallet.redeemed_at && wallet.redeemed_at !== '0000-00-00 00:00:00') {
-                const redeemedDate = new Date(wallet.redeemed_at).toLocaleDateString();
-                statusText += ` ✓ (${redeemedDate})`;
-            }
-        } else if (wallet.hold_status && wallet.hold_status !== '' && wallet.hold_status !== 'false') {
+            statusText = 'REDEEMED' + (w.redeemed_at ? ' (' + shortDate(w.redeemed_at) + ')' : '');
+        } else if (w.hold_status && w.hold_status !== '' && w.hold_status !== 'false') {
             statusClass = 'status-inactive';
             statusText = 'ON HOLD';
-        } else if (wallet.expires_at && new Date(wallet.expires_at) < new Date()) {
+        } else if (w.expires_at && new Date(w.expires_at) < new Date()) {
             statusClass = 'status-inactive';
             statusText = 'EXPIRED';
         } else {
             statusClass = 'status-active';
             statusText = 'ACTIVE';
         }
-        
-        // Format dates
-        const createdDate = wallet.created_at ? new Date(wallet.created_at).toLocaleDateString() : '';
-        const expiresDate = wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '';
-        
-        div.innerHTML = `
-            <div class="ewallet-info">
-                <span class="ewallet-phone">${wallet.recipient_phone || 'N/A'}</span>
-                <span class="muted-text" style="font-size: 11px;">Created: ${createdDate}</span>
-                ${expiresDate ? `<span class="muted-text" style="font-size: 10px;">Expires: ${expiresDate}</span>` : ''}
-            </div>
-            <span style="font-size: 14px;">${wallet.sender_phone || 'N/A'}</span>
-            <span class="ewallet-pin">${wallet.pin || 'N/A'}</span>
-            <span style="font-weight: 700;">$${formatCurrency(wallet.amount || 0)}</span>
-            <span class="ewallet-status ${statusClass}">${statusText}</span>
-        `;
-        ewalletList.appendChild(div);
+
+        const dirTag = w.direction === 'RECEIVED'
+            ? '<span class="tag in">RECEIVED</span>'
+            : '<span class="tag out">SENT</span>';
+
+        html += '<div class="ewallet-item">' +
+            '<span>' + dirTag + '</span>' +
+            '<div class="ewallet-info">' +
+                '<span class="ewallet-phone">' + escapeHtml(w.counterparty || w.recipient_phone || 'N/A') + '</span>' +
+                '<span class="muted-text" style="font-size:11px">Created: ' + escapeHtml(shortDate(w.created_at)) + '</span>' +
+                (w.expires_at ? '<span class="muted-text" style="font-size:10px">Expires: ' + escapeHtml(shortDate(w.expires_at)) + '</span>' : '') +
+            '</div>' +
+            '<span class="ewallet-pin">' + escapeHtml(w.pin || '••••') + '</span>' +
+            '<span style="font-weight:700">' + money(w.amount) + '</span>' +
+            '<span class="ewallet-status ' + statusClass + '">' + escapeHtml(statusText) + '</span>' +
+            '</div>';
     });
+
+    list.innerHTML = html;
 }
 
-function renderTransactions(transactions, listId, typeField, isPending = false) {
-    const list = document.getElementById(listId);
-    list.innerHTML = '';
-    (transactions || []).forEach(tx => {
-        const div = document.createElement('div');
-        div.className = 'list-item';
-        const amount = parseFloat(tx.amount);
-        const amountClass = isPending ? 'amount-negative' : (amount >= 0 ? 'amount-positive' : 'amount-negative');
-        const displayAmount = isPending ? `-$${formatCurrency(amount)}` : (amount >= 0 ? `+$${formatCurrency(amount)}` : `-$${formatCurrency(Math.abs(amount))}`);
-        
-        div.innerHTML = `
-            <span>${tx[typeField] || 'Transaction'}</span>
-            <span class="${amountClass}">${displayAmount} <span class="muted-text">(${tx.created_at || new Date().toISOString().split('T')[0]})</span></span>
-        `;
-        list.appendChild(div);
-    });
-    if (!transactions || transactions.length === 0) {
-        list.innerHTML = `<div class="muted-text" style="padding: 5px 0;">No ${isPending ? 'pending' : 'recent'} transactions.</div>`;
-    }
-}
-
-function safeShowMessage(elementId, message, isSuccess) {
-    const el = document.getElementById(elementId);
-    if (!el) {
-        console.warn(`safeShowMessage: element with ID "${elementId}" not found.`);
-        return;
-    }
-    showMessage(elementId, message, isSuccess);
-}
-
-// --- Initialization ---
-document.addEventListener('DOMContentLoaded', fetchDashboardData);
-
+// --- Auto refresh ---
 let dashboardInterval = null;
-
 function startDashboardAutoFetch() {
+    stopDashboardAutoFetch();
     dashboardInterval = setInterval(fetchDashboardData, 30000);
 }
-
 function stopDashboardAutoFetch() {
-    if (dashboardInterval) clearInterval(dashboardInterval);
+    if (dashboardInterval) { clearInterval(dashboardInterval); dashboardInterval = null; }
 }
 
 function logout() {
     stopDashboardAutoFetch();
     fetch('../../backend/auth/logout.php', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({token})
-    }).finally(() => {
-        window.location.href = '../public/login.php';
-    });
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+    }).finally(() => { window.location.href = '../public/login.php'; });
 }
 
 function downloadBankStatement() {
     const start = document.getElementById('startDate').value || '';
     const end = document.getElementById('endDate').value || '';
-    window.open(`../../backend/reports/bank_statement.php?start_date=${start}&end_date=${end}`, '_blank');
+    window.open('../../backend/reports/bank_statement.php?start_date=' + start + '&end_date=' + end, '_blank');
 }
 
+// --- Transfers ---
 function handleTransfer(event, type) {
     event.preventDefault();
     if (type === 'ownTransfer') submitOwnTransfer(event);
@@ -835,67 +761,9 @@ function handleTransfer(event, type) {
     else if (type === 'ewalletTransfer') submitEwalletTransfer(event);
 }
 
-// ---------------------- Transfer Functions ----------------------
-function submitExternalTransfer(event) {
-    event.preventDefault();
-    const source = document.getElementById('externalTransferSource').value;
-    const bankName = document.getElementById('externalRecipientBank').value.trim();
-    const target = document.getElementById('externalRecipientAccount').value.trim();
-    const amount = parseFloat(document.getElementById('externalTransferAmount').value);
-    const msgBox = document.getElementById('externalTransferMessage');
-    const pinBox = document.getElementById('externalTransferPIN');
-
-    msgBox.style.display = 'none';
-    pinBox.style.display = 'none';
-
-    if (!source || !bankName || !target || !amount || amount <= 0) {
-        showMessage('externalTransferMessage', 'Please fill all fields correctly', false);
-        return;
-    }
-
-    const srcAcc = accountData.find(acc => acc.account_number === source);
-    if (!srcAcc) {
-        showMessage('externalTransferMessage', 'Source account not found', false);
-        return;
-    }
-
-    const fee = Math.max(2, parseFloat((amount * 0.015).toFixed(2)));
-    const totalDebit = amount + fee;
-
-    if (totalDebit > srcAcc.balance) {
-        showMessage('externalTransferMessage', `Insufficient funds. Available: $${formatCurrency(srcAcc.balance)}. Required: $${formatCurrency(totalDebit)} (Amount + Fee)`, false);
-        return;
-    }
-
-    fetch('../../backend/transactions/external_transfer.php', {
-        method: 'POST',
-        headers: {
-            'Authorization': token,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-            source,
-            external_account: target,
-            amount,
-            bank_name: bankName
-        })
-    })
-    .then(res => res.json())
-    .then(data => {
-        showMessage('externalTransferMessage', data.message, data.status === 'success');
-        if (data.status === 'success' && data.pin) {
-            showMessage('externalTransferPIN', 'TRANSFER AUTHORIZED. PIN GENERATED.', true, data.pin);
-            fetchDashboardData();
-            document.getElementById('externalTransferForm').reset();
-        } else if (data.status === 'success') {
-            fetchDashboardData();
-            document.getElementById('externalTransferForm').reset();
-        }
-    })
-    .catch(err => {
-        console.error(err);
-        showMessage('externalTransferMessage', 'Network or server error', false);
-    });
+// spendable balance, so held money is never offered for transfer
+function spendable(acc) {
+    return parseFloat(acc.available !== undefined ? acc.available : acc.balance) || 0;
 }
 
 function loadExternalTransferSources() {
@@ -905,9 +773,52 @@ function loadExternalTransferSources() {
     accountData.forEach(acc => {
         const opt = document.createElement('option');
         opt.value = acc.account_number;
-        opt.textContent = `${acc.account_type.toUpperCase()} ($${formatCurrency(acc.balance)})`;
+        opt.textContent = (acc.account_type || '').toUpperCase() + ' (' + money(spendable(acc)) + ')';
         select.appendChild(opt);
     });
+}
+
+function submitExternalTransfer(event) {
+    event.preventDefault();
+    const source = document.getElementById('externalTransferSource').value;
+    const bankName = document.getElementById('externalRecipientBank').value.trim();
+    const target = document.getElementById('externalRecipientAccount').value.trim();
+    const amount = parseFloat(document.getElementById('externalTransferAmount').value);
+
+    document.getElementById('externalTransferMessage').style.display = 'none';
+    document.getElementById('externalTransferPIN').style.display = 'none';
+
+    if (!source || !bankName || !target || !amount || amount <= 0) {
+        showMessage('externalTransferMessage', 'Please fill all fields correctly', false);
+        return;
+    }
+    const srcAcc = accountData.find(a => a.account_number === source);
+    if (!srcAcc) { showMessage('externalTransferMessage', 'Source account not found', false); return; }
+
+    const fee = Math.max(2, parseFloat((amount * 0.015).toFixed(2)));
+    const totalDebit = amount + fee;
+    if (totalDebit > spendable(srcAcc)) {
+        showMessage('externalTransferMessage',
+            'Insufficient available funds. Available: ' + money(spendable(srcAcc)) +
+            '. Required: ' + money(totalDebit) + ' (amount plus fee)', false);
+        return;
+    }
+
+    fetch('../../backend/transactions/external_transfer.php', {
+        method: 'POST',
+        headers: { 'Authorization': token, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ source, external_account: target, amount, bank_name: bankName })
+    })
+    .then(parseResponse)
+    .then(data => {
+        showMessage('externalTransferMessage', data.message, data.status === 'success');
+        if (data.status === 'success') {
+            if (data.pin) showMessage('externalTransferPIN', 'Transfer authorised. PIN generated.', true, data.pin);
+            fetchDashboardData();
+            document.getElementById('externalTransferForm').reset();
+        }
+    })
+    .catch(err => { console.error(err); showMessage('externalTransferMessage', 'Network or server error', false); });
 }
 
 function submitInternalTransfer(event) {
@@ -916,22 +827,15 @@ function submitInternalTransfer(event) {
     const target = document.getElementById('internalRecipientAccount').value;
     const amount = parseFloat(document.getElementById('internalTransferAmount').value);
 
-    if (!source || !target || !amount) {
-        showMessage('internalTransferMessage', 'Please fill all fields', false);
-        return;
-    }
-
-    const srcAcc = accountData.find(acc => acc.account_number === source);
-    if (!srcAcc) {
-        showMessage('internalTransferMessage', 'Source account not found', false);
-        return;
-    }
+    if (!source || !target || !amount) { showMessage('internalTransferMessage', 'Please fill all fields', false); return; }
+    const srcAcc = accountData.find(a => a.account_number === source);
+    if (!srcAcc) { showMessage('internalTransferMessage', 'Source account not found', false); return; }
 
     const fee = Math.max(1, amount * 0.005);
-    const totalDebit = amount + fee;
-
-    if (totalDebit > srcAcc.balance) {
-        showMessage('internalTransferMessage', `Insufficient funds. Available: $${formatCurrency(srcAcc.balance)}. Required: $${formatCurrency(totalDebit)} (Amount + Fee)`, false);
+    if (amount + fee > spendable(srcAcc)) {
+        showMessage('internalTransferMessage',
+            'Insufficient available funds. Available: ' + money(spendable(srcAcc)) +
+            '. Required: ' + money(amount + fee) + ' (amount plus fee)', false);
         return;
     }
 
@@ -940,18 +844,12 @@ function submitInternalTransfer(event) {
         headers: { 'Authorization': token, 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ source, target_account: target, amount })
     })
-    .then(res => parseResponse(res))
+    .then(parseResponse)
     .then(data => {
         showMessage('internalTransferMessage', data.message, data.status === 'success');
-        if (data.status === 'success') {
-            fetchDashboardData();
-            document.getElementById('internalTransferForm').reset();
-        }
+        if (data.status === 'success') { fetchDashboardData(); document.getElementById('internalTransferForm').reset(); }
     })
-    .catch(err => {
-        console.error(err);
-        showMessage('internalTransferMessage', 'Network or server error', false);
-    });
+    .catch(err => { console.error(err); showMessage('internalTransferMessage', 'Network or server error', false); });
 }
 
 function submitOwnTransfer(event) {
@@ -960,23 +858,13 @@ function submitOwnTransfer(event) {
     const target = document.getElementById('ownTransferDestination').value;
     const amount = parseFloat(document.getElementById('ownTransferAmount').value);
 
-    if (!source || !target || !amount) {
-        showMessage('ownTransferMessage', 'Please fill all fields', false);
-        return;
-    }
-    if (source === target) {
-        showMessage('ownTransferMessage', 'Source and destination cannot be the same', false);
-        return;
-    }
+    if (!source || !target || !amount) { showMessage('ownTransferMessage', 'Please fill all fields', false); return; }
+    if (source === target) { showMessage('ownTransferMessage', 'Source and destination cannot be the same', false); return; }
 
-    const srcAcc = accountData.find(acc => acc.account_number === source);
-    if (!srcAcc) {
-        showMessage('ownTransferMessage', 'Source account not found', false);
-        return;
-    }
-
-    if (amount > srcAcc.balance) {
-        showMessage('ownTransferMessage', `Insufficient funds. Available: $${formatCurrency(srcAcc.balance)}`, false);
+    const srcAcc = accountData.find(a => a.account_number === source);
+    if (!srcAcc) { showMessage('ownTransferMessage', 'Source account not found', false); return; }
+    if (amount > spendable(srcAcc)) {
+        showMessage('ownTransferMessage', 'Insufficient available funds. Available: ' + money(spendable(srcAcc)), false);
         return;
     }
 
@@ -985,80 +873,49 @@ function submitOwnTransfer(event) {
         headers: { 'Authorization': token, 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ source, target, amount })
     })
-    .then(res => parseResponse(res))
+    .then(parseResponse)
     .then(data => {
         showMessage('ownTransferMessage', data.message, data.status === 'success');
-        if (data.status === 'success') {
-            fetchDashboardData();
-            document.getElementById('ownTransferForm').reset();
-        }
+        if (data.status === 'success') { fetchDashboardData(); document.getElementById('ownTransferForm').reset(); }
     })
-    .catch(err => {
-        console.error(err);
-        showMessage('ownTransferMessage', 'Network or server error', false);
-    });
+    .catch(err => { console.error(err); showMessage('ownTransferMessage', 'Network or server error', false); });
 }
 
 function submitEwalletTransfer(event) {
     event.preventDefault();
-
     const source = document.getElementById('ewalletTransferSource').value;
     const recipient = document.getElementById('ewalletRecipientPhone').value.trim();
     const amount = parseFloat(document.getElementById('ewalletTransferAmount').value);
 
     if (!source || !recipient || !amount || amount <= 0) {
-        showMessage('ewalletTransferMessage', 'Please fill all fields correctly (source, phone, and valid amount).', false);
+        showMessage('ewalletTransferMessage', 'Please fill all fields correctly.', false);
         return;
     }
-
-    const srcAcc = accountData.find(acc => acc.account_number === source);
-    if (!srcAcc) {
-        showMessage('ewalletTransferMessage', 'Source account not found.', false);
-        return;
-    }
-
-    if (amount > srcAcc.balance) {
-        showMessage(
-            'ewalletTransferMessage',
-            `Insufficient funds. Available balance: $${formatCurrency(srcAcc.balance)}`,
-            false
-        );
+    const srcAcc = accountData.find(a => a.account_number === source);
+    if (!srcAcc) { showMessage('ewalletTransferMessage', 'Source account not found.', false); return; }
+    if (amount > spendable(srcAcc)) {
+        showMessage('ewalletTransferMessage', 'Insufficient available funds. Available: ' + money(spendable(srcAcc)), false);
         return;
     }
 
     fetch('../../backend/wallet/ewallet_transfer.php', {
         method: 'POST',
-        headers: {
-            'Authorization': token,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            recipient_phone: recipient,
-            amount: amount,
-            from_account_type: srcAcc.account_type
-        })
+        headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_phone: recipient, amount: amount, from_account_type: srcAcc.account_type })
     })
-    .then(res => parseResponse(res))
+    .then(parseResponse)
     .then(data => {
         showMessage('ewalletTransferMessage', data.message, data.status === 'success', data.pin || null);
-
-        if (data.status === 'success') {
-            fetchDashboardData();
-            document.getElementById('ewalletTransferForm').reset();
-        }
+        if (data.status === 'success') { fetchDashboardData(); document.getElementById('ewalletTransferForm').reset(); }
     })
-    .catch(err => {
-        console.error('Transfer error:', err);
-        showMessage('ewalletTransferMessage', 'Network or server error. Please try again.', false);
-    });
+    .catch(err => { console.error('Transfer error:', err); showMessage('ewalletTransferMessage', 'Network or server error.', false); });
 }
 
-// ---------------------- Attach Event Listeners ----------------------
+// --- Start ---
 document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('externalTransferForm').addEventListener('submit', submitExternalTransfer);
-    document.getElementById('ownTransferForm').addEventListener('submit', (e) => handleTransfer(e, 'ownTransfer'));
-    document.getElementById('internalTransferForm').addEventListener('submit', (e) => handleTransfer(e, 'internalTransfer'));
-    document.getElementById('ewalletTransferForm').addEventListener('submit', (e) => handleTransfer(e, 'ewalletTransfer'));
+    fetchDashboardData();
+    startDashboardAutoFetch();
 });
 </script>
 </body>
