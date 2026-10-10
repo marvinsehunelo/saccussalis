@@ -5,6 +5,7 @@
 require_once __DIR__ . '/../../../db.php';
 require_once __DIR__ . '/../../../helpers/crypto.php';
 require_once __DIR__ . '/../../../helpers/sms.php';
+require_once __DIR__ . '/../../../helpers/secondary_email.php';
 
 header('Content-Type: application/json');
 
@@ -70,6 +71,14 @@ try {
     } else {
         // For WALLET, CARD, etc., use the identifier directly
         error_log("[AUTH] Sending OTP to identifier: {$identifier}");
+
+        // A wallet is held against the phone number, so that number names
+        // the customer whose verified email should also get the code.
+        if ($userId === null && in_array($assetType, ['WALLET', 'BANK-WALLET'], true)) {
+            $walletOwner = $pdo->prepare("SELECT user_id FROM users WHERE phone = ? LIMIT 1");
+            $walletOwner->execute([$identifier]);
+            $userId = $walletOwner->fetchColumn() ?: null;
+        }
     }
 
     // Store OTP with user_id and phone_number
@@ -111,16 +120,46 @@ try {
     $message = "Your SaccusSalis verification code is {$otp}. It expires in 5 minutes. Do not share this code.";
     $smsSent = sendSms($phoneNumber, $message);
 
-    if ($smsSent) {
+    // The same code also goes to the customer's verified secondary email
+    // (frontend/dashboard/secondary_email.php), since the email and even
+    // the phone on file may be placeholders. Either one is enough.
+    $emailSentTo = null;
+    if ($userId) {
+        try {
+            $secondary = se_verified_email($pdo, (int)$userId);
+            if ($secondary && se_email_code(
+                $secondary['email'],
+                $otp,
+                'to confirm that you want VouchMorph to link your SaccusSalis account',
+                300
+            )) {
+                $emailSentTo = $secondary['email'];
+                error_log("[AUTH] OTP also emailed to the verified secondary email for user_id={$userId}, auth_id: {$authId}");
+            }
+        } catch (Throwable $e) {
+            error_log("[AUTH] Secondary email send failed for user_id={$userId}: " . $e->getMessage());
+        }
+    }
+
+    if ($smsSent || $emailSentTo) {
         $update = $pdo->prepare("UPDATE auth_otps SET status='sent' WHERE auth_id=?");
         $update->execute([$authId]);
 
-        error_log("[AUTH] OTP sent to phone: {$phoneNumber} for auth_id: {$authId}");
+        error_log("[AUTH] OTP sent for auth_id: {$authId} (sms=" . ($smsSent ? 'yes' : 'no') . ", email=" . ($emailSentTo ? 'yes' : 'no') . ")");
+
+        if ($smsSent && $emailSentTo) {
+            $sentMessage = "Verification code sent by SMS and to your email " . se_mask($emailSentTo) . ".";
+        } elseif ($emailSentTo) {
+            $sentMessage = "Verification code sent to your email " . se_mask($emailSentTo) . ".";
+        } else {
+            $sentMessage = "OTP sent successfully";
+        }
 
         echo json_encode([
             "success" => true,
             "auth_id" => $authId,
-            "message" => "OTP sent successfully",
+            "message" => $sentMessage,
+            "method" => $emailSentTo ? "email" : "sms",
             "expires_in" => 300,
             "sent_to" => $phoneNumber
         ]);
