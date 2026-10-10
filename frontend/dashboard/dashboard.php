@@ -15,6 +15,20 @@ if (!isset($_SESSION['authToken'])) {
 }
 
 $token = $_SESSION['authToken'];
+
+// Verified secondary email, for the card that links to secondary_email.php.
+$secondary_email = null;
+if (!empty($_SESSION['user_id'])) {
+    try {
+        require_once __DIR__ . '/../../backend/db.php';
+        require_once __DIR__ . '/../../backend/helpers/secondary_email.php';
+        if ($pdo) {
+            $secondary_email = se_verified_email($pdo, (int)$_SESSION['user_id']);
+        }
+    } catch (Throwable $e) {
+        error_log("Dashboard secondary email lookup failed: " . $e->getMessage());
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -289,6 +303,17 @@ $token = $_SESSION['authToken'];
                 <h2>Your Wallets</h2>
                 <div class="card-note">Mobile wallets held against your phone number.</div>
                 <div id="walletsList"></div>
+            </div>
+
+            <div class="card secondary-email" style="grid-column: 1 / -1;">
+                <h2>Secondary Email</h2>
+                <?php if ($secondary_email): ?>
+                    <div class="card-note"><?= htmlspecialchars($secondary_email['email']) ?> &mdash; <span style="color: var(--color-positive);">&#10003; Verified</span></div>
+                    <a href="secondary_email.php" style="color: var(--color-fg-primary); font-size: 13px;">Change or remove</a>
+                <?php else: ?>
+                    <div class="card-note">Add an email you can reach. When you link this account to VouchMorph, the verification code is sent there as well as by SMS.</div>
+                    <a href="secondary_email.php" class="vogue-button" style="display: inline-block; text-decoration: none;">Add &amp; verify email</a>
+                <?php endif; ?>
             </div>
 
             <div class="card where" style="grid-column: 1 / -1; margin-top: 5px;">
