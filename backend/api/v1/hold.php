@@ -114,6 +114,8 @@ try {
                 echo json_encode([
                     "status" => "ERROR",
                     "released" => false,
+                    "hold_status" => "NOT_FOUND",
+                    "hold_reference" => $targetHoldReference,
                     "message" => "No hold found for reference: {$targetHoldReference}"
                 ]);
                 exit;
@@ -121,11 +123,19 @@ try {
 
             if (!in_array($hold['status'], ['ACTIVE', 'HELD'], true)) {
                 $pdo->rollBack();
+                // Asking again is harmless (2026-10-15): a hold already
+                // released or expired is reported as released, so the
+                // caller stops asking; a debited one says so plainly.
+                $state = strtoupper((string)$hold['status']);
+                $freed = in_array($state, ['RELEASED', 'EXPIRED', 'CANCELLED'], true);
                 error_log("HOLD: RELEASE - hold {$targetHoldReference} is not in a releasable state (status: {$hold['status']})");
                 echo json_encode([
-                    "status" => "ERROR",
-                    "released" => false,
-                    "message" => "Hold is not active (status: {$hold['status']})"
+                    "status" => $freed ? "SUCCESS" : "ERROR",
+                    "released" => $freed,
+                    "already_released" => $freed,
+                    "hold_status" => $state,
+                    "hold_reference" => $targetHoldReference,
+                    "message" => $freed ? "Hold already released (status: {$hold['status']})" : "Hold is not active (status: {$hold['status']})"
                 ]);
                 exit;
             }

@@ -84,6 +84,25 @@ try {
 
     // Determine debit amount
     $debitAmount = $amount > 0 ? $amount : (float)$hold['amount'];
+
+    // ============================================================
+    // PARTIAL CAPTURE (2026-10-15). A debit for less than the hold used to
+    // take the asked amount and then close the whole hold as DEBITED: the
+    // unused part stayed in held_balance for good (release refused it with
+    // "not active (status: DEBITED)", and expiry skips DEBITED holds), so
+    // the customer could never spend it. Now the asked amount is captured
+    // and the rest stays ACTIVE under the same reference, for a later debit,
+    // a release or expiry. A debit larger than the hold is refused.
+    // ============================================================
+    $heldNow = round((float)$hold['amount'], 2);
+    $debitAmount = round($debitAmount, 2);
+    if ($debitAmount - $heldNow > 0.01) {
+        throw new Exception("Debit {$debitAmount} is more than the {$heldNow} held on {$holdReference}");
+    }
+    $remaining = round($heldNow - $debitAmount, 2);
+    if ($remaining <= 0.01) {
+        $remaining = 0.0;
+    }
     $assetId = null;
     $assetType = strtoupper($hold['asset_type'] ?? 'WALLET');
 
@@ -192,19 +211,39 @@ try {
     // ============================================================
     // UPDATE HOLD STATUS TO DEBITED
     // ============================================================
-    $stmt = $pdo->prepare("
-        UPDATE financial_holds 
-        SET status = 'DEBITED', 
-            cashout_confirmed = TRUE,
-            debited_by = :requester,
-            signature_verified = :sig_verified
-        WHERE id = :id
-    ");
-    $stmt->execute([
-        ':id' => $hold['id'],
-        ':requester' => $requester,
-        ':sig_verified' => $isValid ? 1 : 0
-    ]);
+    if ($remaining > 0) {
+        if (!$pdo->query("SELECT 1 FROM information_schema.columns WHERE table_name = 'financial_holds' AND column_name = 'captured_amount'")->fetchColumn()) {
+            $pdo->exec("ALTER TABLE financial_holds ADD COLUMN IF NOT EXISTS captured_amount NUMERIC(20,4) NOT NULL DEFAULT 0");
+        }
+        // Part captured: the hold stays ACTIVE for what is left.
+        $stmt = $pdo->prepare("
+            UPDATE financial_holds
+            SET amount = :remaining, captured_amount = COALESCE(captured_amount, 0) + :captured,
+                debited_by = :requester, signature_verified = :sig_verified
+            WHERE id = :id
+        ");
+        $stmt->execute([
+            ':remaining' => $remaining,
+            ':captured' => $debitAmount,
+            ':id' => $hold['id'],
+            ':requester' => $requester,
+            ':sig_verified' => $isValid ? 1 : 0
+        ]);
+    } else {
+        $stmt = $pdo->prepare("
+            UPDATE financial_holds 
+            SET status = 'DEBITED', 
+                cashout_confirmed = TRUE,
+                debited_by = :requester,
+                signature_verified = :sig_verified
+            WHERE id = :id
+        ");
+        $stmt->execute([
+            ':id' => $hold['id'],
+            ':requester' => $requester,
+            ':sig_verified' => $isValid ? 1 : 0
+        ]);
+    }
 
     // ============================================================
     // CREDIT THE SETTLEMENT ACCOUNT
@@ -279,6 +318,9 @@ try {
         'transaction_reference' => $transactionReference,
         'hold_reference' => $holdReference,
         'amount' => $debitAmount,
+        'partial' => $remaining > 0,
+        'remaining_held' => $remaining,
+        'hold_status' => $remaining > 0 ? 'ACTIVE' : 'DEBITED',
         'asset_type' => $assetType,
         'asset_id' => $assetId,
         'new_balance' => (float)($updatedAsset['balance'] ?? 0),
