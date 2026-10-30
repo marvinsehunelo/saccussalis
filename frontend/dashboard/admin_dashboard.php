@@ -297,6 +297,9 @@ input, select {
     <?php if ($can_view_users): ?>
     <button id="nav-users" onclick="showScreen('users')"><i data-lucide="users" style="width:14px;"></i> USERS</button>
     <?php endif; ?>
+    <?php if ($can_view_users): ?>
+    <button id="nav-kycbank" onclick="window.location.href='admin_kycbank.php'"><i data-lucide="badge-check" style="width:14px;"></i> KYC BANK</button>
+    <?php endif; ?>
     <?php if ($can_view_transactions): ?>
     <button id="nav-transactions" onclick="showScreen('transactions')"><i data-lucide="list-ordered" style="width:14px;"></i> TRANSACTIONS</button>
     <?php endif; ?>
@@ -709,6 +712,14 @@ function renderUsers(list) {
             kycBtn.style.cursor = 'not-allowed';
         }
         actions.appendChild(kycBtn);
+
+        // KYC BANK: request / review this customer's KYC through KYC Bank
+        const kycBankBtn = document.createElement('button');
+        kycBankBtn.className = 'admin-button btn-sm';
+        kycBankBtn.style.marginLeft = '6px';
+        kycBankBtn.textContent = 'KYC BANK';
+        kycBankBtn.onclick = () => { window.location.href = 'admin_kycbank.php?user_id=' + encodeURIComponent(u.user_id); };
+        actions.appendChild(kycBankBtn);
         
         // --- End Action Buttons ---
 
