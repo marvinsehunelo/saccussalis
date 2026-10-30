@@ -1,0 +1,4 @@
+# Logs and scratch output never belong in this public repository.
+*.log
+.env
+.env.*

@@ -699,7 +699,7 @@ function renderUsers(list) {
         const kycBtn = document.createElement('button');
         kycBtn.className = 'admin-button btn-sm';
         kycBtn.style.marginLeft = '6px';
-        const isApproved = u.kyc_status === 'approved';
+        const isApproved = u.kyc_status === 'approved' || u.kyc_status === 'verified';
         kycBtn.textContent = isApproved ? 'KYC OK' : 'APPROVE KYC';
         
         if (!isApproved) {
@@ -1047,8 +1047,8 @@ async function toggleFreeze(userId, newStatus){
 
 async function approveKyc(userId){
     // approveKyc uses the default 'admin' root
-    const json = await fetchData('admin_approve_kyc', 'POST', { userId });
-    if(json.status === 'success'){ showGlobal(json.message || 'KYC Approved', true); fetchUsers(); }
+    const json = await fetchData('admin_approve_kyc', 'POST', { client_id: userId, status: 'approved' });
+    if(json.success || json.status === 'success'){ showGlobal(json.message || 'KYC Approved', true); fetchUsers(); }
     else showGlobal(json.message || 'Failed to approve KYC', false);
 }
 

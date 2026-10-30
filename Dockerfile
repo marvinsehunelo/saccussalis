@@ -26,4 +26,4 @@ RUN echo "<?php phpinfo(); ?>" > /app/info.php
 EXPOSE 8080
 
 # Start PHP built-in server
-CMD ["sh", "-c", "php -S 0.0.0.0:${PORT:-8080} -t ."]
+CMD ["sh", "-c", "php -S 0.0.0.0:${PORT:-8080} -t . router.php"]

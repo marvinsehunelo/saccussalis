@@ -83,7 +83,7 @@ function va_holding_customer(PDO $pdo): int
     if (isset($cols['phone'])) $values['phone'] = '+267-IDHOLD';          // unique, never a real number
     if (isset($cols['role'])) $values['role'] = 'system';
     if (isset($cols['status'])) $values['status'] = 'active';
-    if (isset($cols['kyc_status'])) $values['kyc_status'] = 'verified';
+    if (isset($cols['kyc_status'])) $values['kyc_status'] = 'approved';
     $names = implode(', ', array_keys($values));
     $marks = implode(', ', array_fill(0, count($values), '?'));
     $ins = $pdo->prepare("INSERT INTO users ({$names}) VALUES ({$marks}) RETURNING user_id");
