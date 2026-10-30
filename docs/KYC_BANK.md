@@ -84,8 +84,8 @@ users can open the page. Auditors can only view; the other roles can also act. F
    fetched. The page shows personal details, identity documents, addresses and contacts first,
    then the rest of the profile. Each view is written to `audit_logs`.
 4. **Approve KYC using this profile / Reject.** Only these buttons change `users.kyc_status`:
-   approve sets `verified`, the value `backend/admin/admin_approve_kyc.php` writes, and reject
-   sets `rejected`. The page records who reviewed the profile, when, and which version.
+   approve sets `approved` (the value the admin dashboard shows as approved; note that the older
+   `backend/admin/admin_approve_kyc.php` writes `verified`), and reject sets `rejected`. The page records who reviewed the profile, when, and which version.
    Webhooks never change `kyc_status`.
 5. **Updates.** When KYC Bank sends a newer profile version (`profile.updated`), it is fetched
    and flagged "Updated profile — needs staff review".

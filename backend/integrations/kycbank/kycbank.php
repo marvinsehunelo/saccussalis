@@ -23,9 +23,9 @@
 //     and never fetched again; the copy is kept only for record-keeping.
 
 require_once __DIR__ . '/KycBankClient.php';
-
+/** What users.kyc_status is set to when staff approve KYC based on a KYC Bank profile. */
 /** What users.kyc_status is set to on approval: the value backend/admin/admin_approve_kyc.php writes. */
-const KB_KYC_APPROVED = 'verified';
+const KB_KYC_APPROVED = 'approved'; // users.kyc_status values: 'pending' | 'approved' | 'rejected'
 const KB_KYC_REJECTED = 'rejected';
 
 const KB_DEFAULT_PURPOSE = 'Open and verify your Saccussalis account';
