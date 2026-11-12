@@ -23,3 +23,26 @@ Railway, keep `router.php` at the end.
   refuses auditors, and writes an `audit_logs` row with the old and new status.
 - `database/migrations/2026_10_30_kyc_status_approved.sql` turns old `verified` statuses into
   `approved`.
+
+## Holds (`backend/api/v1/hold.php`)
+
+Every action on this endpoint (place, release, debit) needs a request signed by a member of the
+VouchMorph scheme: a `certificate` issued by the scheme CA and a `signature`, made with that
+certificate's key, over the rest of the JSON body. The check (`backend/helpers/signed_request.php`,
+the same `CertificateManager::verifySignedRequest` that `notify_debit.php` uses) runs before the
+database is touched. A request that fails it gets HTTP 401 and
+`{"status":"ERROR","error":"UNAUTHORIZED","message":"..."}` and changes nothing.
+
+Variables the host must have, or holds stop working:
+
+| Variable | On | What happens when it is missing |
+| --- | --- | --- |
+| `VOUCHMORPH_CA_CERT_CONTENT` (PEM of the scheme CA) | saccussalis | Every hold, release and debit is refused (401). |
+| `SACCUSSALIS_PRIVATE_KEY_CONTENT`, `SACCUSSALIS_CERT_CONTENT` | saccussalis | The hold is placed but the answer goes out unsigned, and VouchMorph rejects an unsigned answer from a bank - the money stays reserved with no swap. |
+| `VOUCHMORPH_PRIVATE_KEY(_CONTENT)`, `VOUCHMORPH_CERT(_CONTENT)` | VouchMorph | VouchMorph sends holds without a certificate and releases unsigned; both are now refused. |
+
+The `openssl` command must be on the host as well (`CertificateManager` calls it to check the
+certificate chain); without it every certificate is refused.
+
+Test: `php tests/hold_signature_test.php` (add `HOLD_E2E=1` and a local throwaway database in the
+`PG*` variables to run the endpoint end to end).

@@ -1,0 +1,52 @@
+<?php
+// backend/helpers/signed_request.php
+//
+// One place that decides whether a request body really came from a member of the VouchMorph
+// scheme. It fails closed: the caller is only told "verified" when the body carries a
+// certificate that chains to the trusted CA (VOUCHMORPH_CA_CERT_CONTENT) and a signature, made
+// with that certificate's key, over the rest of the body. Anything else - no certificate, no
+// signature, an unset CA, an error while checking - is "not verified".
+//
+// Same check as notify_debit.php (CertificateManager::verifySignedRequest), wrapped so that an
+// endpoint cannot skip it by accident.
+
+require_once __DIR__ . '/CertificateManager.php';
+
+/**
+ * @param mixed $input  the decoded request body
+ * @return array{verified: bool, requester: string, message: string}
+ */
+function verify_signed_caller($input, ?CertificateManager $certManager = null): array
+{
+    $refuse = static function (string $message, string $requester = 'UNKNOWN'): array {
+        return ['verified' => false, 'requester' => $requester, 'message' => $message];
+    };
+
+    if (!is_array($input)) {
+        return $refuse('Signed JSON body required');
+    }
+
+    $requester = (isset($input['requester']) && is_string($input['requester'])) ? $input['requester'] : 'UNKNOWN';
+
+    if (empty($input['certificate']) || !is_string($input['certificate'])) {
+        return $refuse('Certificate required', $requester);
+    }
+    if (empty($input['signature']) || !is_string($input['signature'])) {
+        return $refuse('Signature required', $requester);
+    }
+
+    try {
+        $certManager = $certManager ?? new CertificateManager('SACCUSSALIS');
+        $result = $certManager->verifySignedRequest($input);
+    } catch (Throwable $e) {
+        error_log('verify_signed_caller: verification error: ' . $e->getMessage());
+        return $refuse('Certificate verification failed', $requester);
+    }
+
+    if (!is_array($result) || ($result['verified'] ?? false) !== true) {
+        $reason = is_array($result) ? (string)($result['message'] ?? 'Invalid signature') : 'Invalid signature';
+        return $refuse('Certificate verification failed: ' . $reason, $requester);
+    }
+
+    return ['verified' => true, 'requester' => $requester, 'message' => 'Signature verified'];
+}
