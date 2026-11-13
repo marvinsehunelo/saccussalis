@@ -12,8 +12,13 @@
 //
 // Part 2 runs only with HOLD_E2E=1 and a LOCAL throwaway PostgreSQL database in the PG*
 // variables (it refuses any host other than localhost, and DROPS AND RECREATES the tables it
-// uses). It starts hold.php on a local port and checks, for place, release and debit, that an
-// unsigned or wrongly signed request changes nothing and a signed one works:
+// uses). It starts hold.php on local ports and checks, for place, release and debit, that an
+// unsigned or wrongly signed request changes nothing and a signed one works; that odd bodies, bad
+// amounts and replays change nothing; that no PIN, signature or certificate reaches the log; and
+// that requests at the same moment cannot over-reserve or act twice. For those, the test holds the
+// row lock itself and lets the requests go only once PostgreSQL shows all of them waiting for it,
+// so the result does not depend on timing. docs/SECURITY_NOTES.md ("Holds") shows how to start
+// a throwaway PostgreSQL (it will not run as root). Then:
 //
 //     HOLD_E2E=1 PGHOST=127.0.0.1 PGPORT=5432 PGDATABASE=hold_test PGUSER=postgres \
 //         PGPASSWORD=made-up php tests/hold_signature_test.php
@@ -106,7 +111,31 @@ $accept = [
 foreach ($accept as $name => $req) {
     $r = verify_signed_caller(over_the_wire($req));
     check("accepted: $name", $r['verified'] === true && $r['requester'] === 'VOUCHMORPH', $r['message']);
+    check("accepted: $name names the certificate that signed", $r['signer'] === 'VOUCHMORPH-TEST', $r['signer']);
 }
+
+// The top-level order of the fields does not matter (they are sorted before checking), and a
+// change of type with the same meaning on paper ("150" for 150.0) is a different body.
+$reordered = over_the_wire(vm_sign($place, $vmKey, $vmPem));
+check('accepted: same signed body with its fields in reverse order', verify_signed_caller(array_reverse($reordered, true))['verified'] === true);
+check('refused: amount sent as a string after signing', verify_signed_caller(array_merge($reordered, ['amount' => '150']))['verified'] === false);
+$nestedSwapped = $reordered;
+$nestedSwapped['nested'] = array_reverse($nestedSwapped['nested'], true);
+check('refused: nested fields reordered after signing', verify_signed_caller($nestedSwapped)['verified'] === false);
+
+// `requester` is not covered by the signature: it can be changed, so it must never be trusted
+// on its own (the real signer is reported separately), and it is cut down before it is logged.
+$r = verify_signed_caller(array_merge($reordered, ['requester' => "SOMEONE\nELSE"]));
+check('requester is not signed: changing it still verifies', $r['verified'] === true);
+check('requester is not signed: signer still reports the real certificate', $r['signer'] === 'VOUCHMORPH-TEST');
+check('requester with a line break is made log-safe', strpos($r['requester'], "\n") === false, json_encode($r['requester']));
+
+// A body that cannot be encoded again (a number too large for a float) would otherwise be
+// checked as an empty string, so a signature over "" must not open it.
+openssl_sign('', $emptySig, $vmKey, OPENSSL_ALGO_SHA256);
+$inf = json_decode('{"action":"PLACE_HOLD","amount":1e400}', true);
+$inf += ['signature' => base64_encode($emptySig), 'certificate' => $vmPem, 'requester' => 'VOUCHMORPH'];
+check('refused: unencodable body with a signature over the empty string', verify_signed_caller($inf)['verified'] === false);
 
 $signedPlace = vm_sign($place, $vmKey, $vmPem);
 $wrongKeySig = vm_sign($place, $strangerKey, $vmPem);           // VouchMorph's certificate, someone else's key
@@ -167,6 +196,11 @@ $gate = strpos($src, 'verify_signed_caller($input)');
 $firstDb = strpos($src, '$pdo->');
 check('hold.php calls verify_signed_caller', $gate !== false);
 check('hold.php verifies before first database use', $gate !== false && $firstDb !== false && $gate < $firstDb);
+$dbLoad = strpos($src, "require_once __DIR__ . '/../../db.php'");
+check('hold.php opens the database only after the check', $gate !== false && $dbLoad !== false && $gate < $dbLoad);
+check('hold.php loads db.php exactly once', substr_count($src, 'db.php\'') === 1);
+$cmSrc = file_get_contents(__DIR__ . '/../backend/helpers/CertificateManager.php');
+check('CertificateManager does not log the signed body', strpos($cmSrc, 'VERIFYING JSON') === false);
 check('hold.php has no class_exists() guard around the check', strpos($src, 'class_exists') === false);
 check('CertificateManager class is found', class_exists('CertificateManager'));
 
@@ -201,32 +235,50 @@ if (getenv('HOLD_E2E') === '1') {
             created_at TIMESTAMP DEFAULT NOW(), asset_type TEXT, requester TEXT, foreign_bank TEXT);
         INSERT INTO users (full_name, email, kyc_status) VALUES ('Test Person (made up)', 'person@example.test', 'approved');
         INSERT INTO accounts (user_id, account_number, account_type, currency, balance) VALUES
-            (1, '9000000001', 'savings', 'BWP', 1000), (1, '9000000002', 'savings', 'BWP', 100);
+            (1, '9000000001', 'savings', 'BWP', 1000), (1, '9000000002', 'savings', 'BWP', 100),
+            (1, '9000000003', 'savings', 'BWP', 500), (1, '9000000004', 'savings', 'BWP', 500);
     ");
 
     [$bankPem, $bankKey] = make_cert('SACCUSSALIS-TEST', $caPem, $caKey, false);
     openssl_pkey_export($bankKey, $bankKeyPem);
 
-    $port = 18000 + random_int(0, 999);
     $env = array_merge(getenv(), [
         'VOUCHMORPH_CA_CERT_CONTENT' => $caPem, 'SACCUSSALIS_PRIVATE_KEY_CONTENT' => $bankKeyPem,
-        'SACCUSSALIS_CERT_CONTENT' => $bankPem, 'PHP_CLI_SERVER_WORKERS' => '6',
+        'SACCUSSALIS_CERT_CONTENT' => $bankPem,
     ]);
+    unset($env['PHP_CLI_SERVER_WORKERS']);
     $log = tempnam(sys_get_temp_dir(), 'holdtest_log_');
-    $server = proc_open(
-        [PHP_BINARY, '-S', "127.0.0.1:$port", '-t', dirname(__DIR__), dirname(__DIR__) . '/router.php'],
-        [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']],
-        $pipes, dirname(__DIR__), $env
-    );
-    register_shutdown_function(static function () use ($server, $log) { proc_terminate($server); @unlink($log); });
-    $url = "http://127.0.0.1:$port/backend/api/v1/hold.php";
-    for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', $port); $i++) usleep(100000);
+    register_shutdown_function(static function () use ($log) { @unlink($log); });
+    // One single-process server per address. The built-in server can take two connections and
+    // serve them one after the other, so requests meant to run at the same moment each get a
+    // server of their own (index 0 is the one used for everything else).
+    $basePort = 18000 + random_int(0, 900);
+    $urls = [];
+    for ($n = 0; $n < 9; $n++) {
+        $p = $basePort + $n;
+        $proc = proc_open(
+            [PHP_BINARY, '-S', "127.0.0.1:$p", '-t', dirname(__DIR__), dirname(__DIR__) . '/router.php'],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']],
+            $pipes, dirname(__DIR__), $env
+        );
+        register_shutdown_function(static function () use ($proc) { proc_terminate($proc); });
+        $urls[] = "http://127.0.0.1:$p/backend/api/v1/hold.php";
+        for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', $p); $i++) usleep(100000);
+    }
+    $url = $urls[0];
 
     $post = static function (array $body) use ($url): array {
         $ch = curl_init($url);
         curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30,
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_SLASHES)]);
+        $raw = curl_exec($ch);
+        return [curl_getinfo($ch, CURLINFO_HTTP_CODE), json_decode((string)$raw, true) ?? ['_raw' => $raw]];
+    };
+    $postRaw = static function (string $body, string $contentType) use ($url): array {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => ['Content-Type: ' . $contentType], CURLOPT_POSTFIELDS => $body]);
         $raw = curl_exec($ch);
         return [curl_getinfo($ch, CURLINFO_HTTP_CODE), json_decode((string)$raw, true) ?? ['_raw' => $raw]];
     };
@@ -297,25 +349,176 @@ if (getenv('HOLD_E2E') === '1') {
     check('debit, signed: debited', $code === 200 && ($res['debited'] ?? false) === true, json_encode($res));
     check('debit, signed: balance reduced, reservation cleared', $acct('9000000001') == ['balance' => 800.0, 'held' => 0.0] && $holdStatus('HOLD_E2E_B') === 'DEBITED');
 
-    // Ten holds of 30 at the same moment on an account holding 100: three fit, never more.
-    $mh = curl_multi_init();
-    $handles = [];
-    for ($i = 0; $i < 10; $i++) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_POSTFIELDS => json_encode(vm_sign($placeFor("HOLD_E2E_RACE_$i", 30.0, '9000000002'), $vmKey, $vmPem), JSON_UNESCAPED_SLASHES)]);
-        curl_multi_add_handle($mh, $ch);
-        $handles[] = $ch;
+    // ODD INPUTS: none of these may change anything, and none without a signature may get past
+    // the check (an empty body is turned away even earlier, as before).
+    $before = $state();
+    $odd = [
+        'empty body'                  => ['', 'application/json'],
+        'not JSON'                    => ['this is not json', 'application/json'],
+        'JSON string'                 => ['"PLACE_HOLD"', 'application/json'],
+        'JSON number'                 => ['42', 'application/json'],
+        'JSON list'                   => ['[1,2,3]', 'application/json'],
+        'unknown action, unsigned'    => [json_encode(['action' => 'STEAL', 'hold_reference' => 'HOLD_E2E_A']), 'application/json'],
+        'form-encoded release'        => [http_build_query(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_B']), 'application/x-www-form-urlencoded'],
+        'form-encoded, fake signature' => [http_build_query(['action' => 'DEBIT', 'hold_reference' => 'HOLD_E2E_B', 'certificate' => $vmPem, 'signature' => 'AAAA']), 'application/x-www-form-urlencoded'],
+    ];
+    foreach ($odd as $name => [$body, $type]) {
+        [$code, $res] = $postRaw($body, $type);
+        // A body that is not a JSON object (and not a form) is turned away as empty, before the
+        // check and before the database; everything else must meet the check.
+        $turnedAwayAsEmpty = ($res['status'] ?? '') === 'ERROR' && ($res['message'] ?? '') === 'No input data received';
+        $okShape = in_array($name, ['empty body', 'not JSON', 'JSON string', 'JSON number'], true)
+            ? $turnedAwayAsEmpty
+            : ($code === 401 && ($res['error'] ?? '') === 'UNAUTHORIZED');
+        check("odd input, $name: refused", $okShape, "HTTP $code " . json_encode($res));
     }
-    do { curl_multi_exec($mh, $running); curl_multi_select($mh, 0.2); } while ($running > 0);
-    $placed = 0;
-    foreach ($handles as $ch) {
-        $placed += (json_decode((string)curl_multi_getcontent($ch), true)['hold_placed'] ?? false) === true ? 1 : 0;
+    check('odd inputs: nothing changed', $state() === $before);
+    [$code, $res] = $post(vm_sign(['action' => 'STEAL', 'hold_reference' => 'HOLD_E2E_B'], $vmKey, $vmPem));
+    check('unknown action, signed: refused as unsupported, nothing changed',
+        ($res['status'] ?? '') === 'ERROR' && strpos($res['message'] ?? '', 'Unsupported action') === 0 && $state() === $before, json_encode($res));
+
+    // BAD AMOUNTS on place, correctly signed: refused, nothing reserved or freed.
+    foreach (['negative' => -50.0, 'zero' => 0, 'not a number' => 'abc', 'thousands separator' => '1,000'] as $name => $amt) {
+        $before = $state();
+        $body = $placeFor("HOLD_E2E_AMT_" . md5($name), 1.0, '9000000001');
+        $body['amount'] = $amt;
+        [$code, $res] = $post(vm_sign($body, $vmKey, $vmPem));
+        check("place, signed, $name amount: refused", ($res['hold_placed'] ?? null) === false, json_encode($res));
+        check("place, signed, $name amount: nothing changed", $state() === $before);
     }
+
+    // REPLAY: the very same signed body sent again does nothing the second time.
+    $replayPlace = vm_sign($placeFor('HOLD_E2E_REPLAY', 40.0, '9000000001'), $vmKey, $vmPem);
+    [, $first] = $post($replayPlace);
+    $before = $state();
+    [, $again] = $post($replayPlace);
+    check('replay of a signed place: first placed, second refused, nothing changed',
+        ($first['hold_placed'] ?? false) === true && ($again['hold_placed'] ?? null) === false && $state() === $before, json_encode($again));
+    $replayRelease = vm_sign(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_REPLAY'], $vmKey, $vmPem);
+    [, $first] = $post($replayRelease);
+    $before = $state();
+    [, $again] = $post($replayRelease);
+    check('replay of a signed release: first released, second refused, nothing changed',
+        ($first['released'] ?? false) === true && ($again['released'] ?? null) === false && $state() === $before, json_encode($again));
+    $before = $state();
+    [, $again] = $post($replayPlace);
+    check('replay of the place after its release: refused, nothing changed', ($again['hold_placed'] ?? null) === false && $state() === $before);
+    $post(vm_sign($placeFor('HOLD_E2E_REPLAY_D', 60.0, '9000000001'), $vmKey, $vmPem));
+    $replayDebit = vm_sign(['action' => 'DEBIT_FUNDS', 'hold_reference' => 'HOLD_E2E_REPLAY_D'], $vmKey, $vmPem);
+    [, $first] = $post($replayDebit);
+    $before = $state();
+    [, $again] = $post($replayDebit);
+    check('replay of a signed debit: first debited, second refused, nothing changed',
+        ($first['debited'] ?? false) === true && ($again['debited'] ?? null) === false && $state() === $before, json_encode($again));
+    check('after the replays: account 9000000001 is 740 with nothing held', $acct('9000000001') == ['balance' => 740.0, 'held' => 0.0], json_encode($acct('9000000001')));
+
+    // AT THE SAME MOMENT, for real: the test itself locks the row the requests need, sends them
+    // all, waits until every one of them is inside PostgreSQL waiting for that lock (so all have
+    // already read the old balance or hold state), and only then lets them go. Whether they
+    // arrive together is therefore not left to timing.
+    $gated = static function (array $bodies, string $lockSql, array $lockParams) use ($urls, $host): array {
+        $connect = static fn() => new PDO('pgsql:host=' . $host . ';port=' . (getenv('PGPORT') ?: '5432') . ';dbname=' . getenv('PGDATABASE'),
+            (string)getenv('PGUSER'), (string)getenv('PGPASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $locker = $connect();
+        $locker->beginTransaction();
+        $locker->prepare($lockSql)->execute($lockParams);
+        // Watched from its own connection: inside a transaction pg_stat_activity does not change.
+        $watcher = $connect();
+        $waiting = $watcher->prepare("SELECT count(*) FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'");
+        $mh = curl_multi_init();
+        $handles = [];
+        foreach (array_values($bodies) as $n => $body) {
+            $ch = curl_init($urls[$n + 1]);
+            curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 90,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_SLASHES)]);
+            curl_multi_add_handle($mh, $ch);
+            $handles[] = $ch;
+        }
+        $allWaiting = false;
+        $seen = 0;
+        $deadline = microtime(true) + 30;
+        do {
+            curl_multi_exec($mh, $running);
+            curl_multi_select($mh, 0.05);
+            $waiting->execute();
+            $now = (int)$waiting->fetchColumn();
+            $seen = max($seen, $now);
+            $allWaiting = $now === count($bodies);
+        } while (!$allWaiting && $running > 0 && microtime(true) < $deadline);
+        if (!$allWaiting) {
+            fwrite(STDERR, "gate: saw at most $seen of " . count($bodies) . " requests waiting\n");
+        }
+        $locker->commit();
+        do { curl_multi_exec($mh, $running); curl_multi_select($mh, 0.2); } while ($running > 0);
+        $out = [];
+        foreach ($handles as $ch) {
+            $out[] = json_decode((string)curl_multi_getcontent($ch), true) ?? [];
+        }
+        return [$allWaiting, $out];
+    };
+    $count = static fn(array $responses, string $flag) => count(array_filter($responses, fn($r) => ($r[$flag] ?? false) === true));
+
+    // Eight holds of 30 on an account holding 100, all past the balance read before any reserves.
+    $bodies = [];
+    for ($i = 0; $i < 8; $i++) {
+        $bodies[] = vm_sign($placeFor("HOLD_E2E_RACE_$i", 30.0, '9000000002'), $vmKey, $vmPem);
+    }
+    [$together, $res] = $gated($bodies, "SELECT 1 FROM accounts WHERE account_number = ? FOR UPDATE", ['9000000002']);
+    $placed = $count($res, 'hold_placed');
     $race = $acct('9000000002');
-    check("simultaneous holds: 3 of 10 placed (got $placed)", $placed === 3);
+    check('simultaneous holds: all 8 were waiting at the same moment', $together);
+    check("simultaneous holds: 3 of 8 placed (got $placed)", $placed === 3);
     check("simultaneous holds: reserved 90 of 100 (got {$race['held']})", $race['held'] == 90.0);
+    $rows = (int)$pdo->query("SELECT count(*) FROM financial_holds WHERE hold_reference LIKE 'HOLD_E2E_RACE_%'")->fetchColumn();
+    check("simultaneous holds: 3 hold rows written (got $rows)", $rows === 3);
+
+    // Two holds with the same reference at the same moment: one hold, one reservation.
+    $dup = vm_sign($placeFor('HOLD_E2E_SAME_REF', 50.0, '9000000003'), $vmKey, $vmPem);
+    [$together, $res] = $gated([$dup, $dup], "SELECT 1 FROM accounts WHERE account_number = ? FOR UPDATE", ['9000000003']);
+    $rows = (int)$pdo->query("SELECT count(*) FROM financial_holds WHERE hold_reference = 'HOLD_E2E_SAME_REF'")->fetchColumn();
+    check('same reference twice at once: both were waiting at the same moment', $together);
+    check('same reference twice at once: exactly one placed', $count($res, 'hold_placed') === 1, json_encode($res));
+    check('same reference twice at once: one row, 50 reserved', $rows === 1 && $acct('9000000003')['held'] == 50.0, json_encode($acct('9000000003')));
+
+    // Release and debit of the same hold at the same moment: exactly one of them happens.
+    $post(vm_sign($placeFor('HOLD_E2E_REL_VS_DEB', 70.0, '9000000004'), $vmKey, $vmPem));
+    [$together, $res] = $gated([
+        vm_sign(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_REL_VS_DEB'], $vmKey, $vmPem),
+        vm_sign(['action' => 'DEBIT_FUNDS', 'hold_reference' => 'HOLD_E2E_REL_VS_DEB'], $vmKey, $vmPem),
+    ], "SELECT 1 FROM financial_holds WHERE hold_reference = ? FOR UPDATE", ['HOLD_E2E_REL_VS_DEB']);
+    $released = $count($res, 'released');
+    $debited = $count($res, 'debited');
+    $a4 = $acct('9000000004');
+    $status = $holdStatus('HOLD_E2E_REL_VS_DEB');
+    check('release and debit at once: both were waiting at the same moment', $together);
+    check("release and debit at once: exactly one happened (released $released, debited $debited)", $released + $debited === 1);
+    check('release and debit at once: balance matches what happened',
+        ($status === 'RELEASED' && $a4 == ['balance' => 500.0, 'held' => 0.0]) || ($status === 'DEBITED' && $a4 == ['balance' => 430.0, 'held' => 0.0]),
+        "$status " . json_encode($a4));
+
+    // The same signed debit sent twice at the same moment (a replay racing the original).
+    $post(vm_sign($placeFor('HOLD_E2E_DEB_TWICE', 80.0, '9000000004'), $vmKey, $vmPem));
+    $balanceBefore = $acct('9000000004')['balance'];
+    $twice = vm_sign(['action' => 'DEBIT_FUNDS', 'hold_reference' => 'HOLD_E2E_DEB_TWICE'], $vmKey, $vmPem);
+    [$together, $res] = $gated([$twice, $twice], "SELECT 1 FROM financial_holds WHERE hold_reference = ? FOR UPDATE", ['HOLD_E2E_DEB_TWICE']);
+    check('same debit twice at once: both were waiting at the same moment', $together);
+    check('same debit twice at once: debited once', $count($res, 'debited') === 1 && $acct('9000000004') == ['balance' => $balanceBefore - 80.0, 'held' => 0.0], json_encode($acct('9000000004')));
+
+    // NOTHING SECRET IN THE LOG: a made-up PIN, the request signature and certificates.
+    $pinBody = $placeFor('HOLD_E2E_LOG', 5.0, '9000000003');
+    $pinBody['pin'] = '7319-MADE-UP-PIN';
+    $pinSigned = vm_sign($pinBody, $vmKey, $vmPem);
+    $post($pinSigned);
+    $post(array_merge($pinSigned, ['signature' => base64_encode('forged-for-the-log-test')]));
+    usleep(300000);
+    $logText = (string)file_get_contents($log);
+    check('log: has entries from hold.php (the scan below is meaningful)', strpos($logText, 'HOLD: request received') !== false);
+    check('log: no PIN', strpos($logText, '7319-MADE-UP-PIN') === false);
+    check('log: no request signature', strpos($logText, $pinSigned['signature']) === false
+        && strpos($logText, base64_encode('forged-for-the-log-test')) === false);
+    check('log: no certificate or key', strpos($logText, 'BEGIN CERTIFICATE') === false && strpos($logText, 'PRIVATE KEY') === false);
 } else {
     echo "(Part 2 skipped: set HOLD_E2E=1 with a local throwaway database to run it)\n";
 }

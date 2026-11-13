@@ -9,7 +9,8 @@
  *           issued by the VouchMorph CA. The check runs before anything is read or changed.
  */
 
-require_once __DIR__ . '/../../db.php';
+// db.php is loaded only after the caller is verified (below), so an unsigned request does not
+// even open a database connection.
 require_once __DIR__ . '/../../helpers/crypto.php';
 require_once __DIR__ . '/../../helpers/signed_request.php';
 
@@ -29,9 +30,13 @@ if (empty($input)) {
     exit;
 }
 
-// The body can carry a certificate and a customer's PIN, so only its shape is logged.
-error_log("HOLD: request received: action=" . (is_string($input['action'] ?? null) ? $input['action'] : '(none)')
-    . ", fields=" . implode(',', array_keys($input)));
+// The body can carry a certificate and a customer's PIN, so only its shape is logged. Both parts
+// come from an unverified caller, so they are cut down to printable characters first.
+$logSafe = static function ($value, int $max): string {
+    return substr(preg_replace('/[^\x20-\x7E]/', '?', (string)$value), 0, $max);
+};
+error_log("HOLD: request received: action=" . (is_string($input['action'] ?? null) ? $logSafe($input['action'], 32) : '(none)')
+    . ", fields=" . $logSafe(implode(',', array_keys($input)), 300));
 
 // ============================================================
 // WHO IS CALLING - REQUIRED FOR EVERY ACTION, BEFORE ANYTHING ELSE
@@ -53,9 +58,13 @@ if (!$callerCheck['verified']) {
     ]);
     exit;
 }
-error_log("HOLD: request verified by certificate (requester: " . $callerCheck['requester'] . ")");
+error_log("HOLD: request verified by certificate (signer: " . $callerCheck['signer']
+    . ", claimed requester: " . $callerCheck['requester'] . ")");
 
-$action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
+require_once __DIR__ . '/../../db.php';
+
+$rawAction = $input['action'] ?? 'PLACE_HOLD';
+$action = is_string($rawAction) ? strtoupper(trim($rawAction)) : '';
 $isPlaceAction = in_array($action, ['HOLD', 'PLACE', 'PLACE_HOLD']);
 $isReleaseAction = in_array($action, ['RELEASE', 'RELEASE_HOLD', 'UNHOLD']);
 $isDebitAction = in_array($action, ['DEBIT', 'DEBIT_HOLD', 'DEBIT_FUNDS']);
@@ -85,6 +94,16 @@ if ($isPlaceAction) {
             exit;
         }
     }
+    // A negative amount would lower held_balance and so free money that is held elsewhere.
+    $rawAmount = $input['amount'];
+    if (!is_numeric($rawAmount) || !is_finite((float)$rawAmount) || (float)$rawAmount <= 0) {
+        echo json_encode([
+            "status" => "ERROR",
+            "hold_placed" => false,
+            "message" => "Invalid amount: must be a number greater than zero"
+        ]);
+        exit;
+    }
 } else {
     $targetHoldReference = $input['hold_reference'] ?? $input['reference'] ?? null;
     if (empty($targetHoldReference)) {
@@ -97,7 +116,7 @@ if ($isPlaceAction) {
 }
 
 $amount = (float)($input['amount'] ?? 0);
-$assetType = strtoupper($input['asset_type'] ?? 'ACCOUNT');
+$assetType = is_string($input['asset_type'] ?? 'ACCOUNT') ? strtoupper($input['asset_type'] ?? 'ACCOUNT') : '';
 $holdReason = $input['hold_reason'] ?? 'PENDING_SWAP';
 $holdReference = $input['reference'] ?? 'HOLD_' . uniqid();
 $expiry = $input['expiry'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));

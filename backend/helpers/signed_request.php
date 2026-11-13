@@ -13,20 +13,27 @@
 require_once __DIR__ . '/CertificateManager.php';
 
 /**
+ * What the signature covers: every field of the body except `signature`, `certificate` and
+ * `requester`, top-level keys sorted, JSON-encoded as VouchMorph does. So `requester` is a
+ * claim, not proof; `signer` (the certificate's subject) is who really signed.
+ *
  * @param mixed $input  the decoded request body
- * @return array{verified: bool, requester: string, message: string}
+ * @return array{verified: bool, requester: string, signer: string, message: string}
  */
 function verify_signed_caller($input, ?CertificateManager $certManager = null): array
 {
     $refuse = static function (string $message, string $requester = 'UNKNOWN'): array {
-        return ['verified' => false, 'requester' => $requester, 'message' => $message];
+        return ['verified' => false, 'requester' => $requester, 'signer' => '', 'message' => $message];
     };
 
     if (!is_array($input)) {
         return $refuse('Signed JSON body required');
     }
 
-    $requester = (isset($input['requester']) && is_string($input['requester'])) ? $input['requester'] : 'UNKNOWN';
+    // Made safe to write to a log: printable ASCII only, at most 64 characters.
+    $requester = (isset($input['requester']) && is_string($input['requester']))
+        ? substr(preg_replace('/[^\x20-\x7E]/', '?', $input['requester']), 0, 64)
+        : 'UNKNOWN';
 
     if (empty($input['certificate']) || !is_string($input['certificate'])) {
         return $refuse('Certificate required', $requester);
@@ -48,5 +55,10 @@ function verify_signed_caller($input, ?CertificateManager $certManager = null): 
         return $refuse('Certificate verification failed: ' . $reason, $requester);
     }
 
-    return ['verified' => true, 'requester' => $requester, 'message' => 'Signature verified'];
+    $parsed = @openssl_x509_parse($input['certificate']);
+    $cn = is_array($parsed) ? ($parsed['subject']['CN'] ?? $parsed['name'] ?? '') : '';
+    $signer = is_array($cn) ? implode(',', $cn) : (string)$cn;
+    $signer = substr(preg_replace('/[^\x20-\x7E]/', '?', $signer), 0, 128);
+
+    return ['verified' => true, 'requester' => $requester, 'signer' => $signer, 'message' => 'Signature verified'];
 }
