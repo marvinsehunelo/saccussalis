@@ -160,11 +160,16 @@ class CertificateManager
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if (!is_string($jsonToVerify) || !is_string($signature)) {
+            // A body that cannot be encoded again (e.g. a number too large for a float) would
+            // otherwise be checked as an empty string.
+            return ['verified' => false, 'message' => 'Request body cannot be verified', 'requester' => $requester];
+        }
         $decodedSig = base64_decode($signature);
-        
-        // DEBUG: Log what's being verified
-        error_log("CertificateManager: VERIFYING JSON: " . $jsonToVerify);
-        
+
+        // Only the size is logged: the body can carry a customer's PIN and account details.
+        error_log("CertificateManager: verifying " . strlen($jsonToVerify) . " bytes of signed JSON");
+
         // Step 4: Verify signature
         $keyResource = openssl_pkey_get_public($publicKey);
         if (!$keyResource) {
