@@ -6,7 +6,8 @@
  * FIXED: Only sets account_id OR wallet_id based on asset_type, never both
  * UPDATED: Added CARD support for holds (cards link to accounts)
  * SECURITY: every action (place, release, debit) needs a request signed with a certificate
- *           issued by the VouchMorph CA. The check runs before anything is read or changed.
+ *           issued by the VouchMorph CA, and on the HOLD_ALLOWED_SIGNERS list when that is set.
+ *           The check runs before anything is read or changed. A place needs a reference.
  */
 
 // db.php is loaded only after the caller is verified (below), so an unsigned request does not
@@ -30,13 +31,8 @@ if (empty($input)) {
     exit;
 }
 
-// The body can carry a certificate and a customer's PIN, so only its shape is logged. Both parts
-// come from an unverified caller, so they are cut down to printable characters first.
-$logSafe = static function ($value, int $max): string {
-    return substr(preg_replace('/[^\x20-\x7E]/', '?', (string)$value), 0, $max);
-};
-error_log("HOLD: request received: action=" . (is_string($input['action'] ?? null) ? $logSafe($input['action'], 32) : '(none)')
-    . ", fields=" . $logSafe(implode(',', array_keys($input)), 300));
+// The body can carry a certificate and a customer's PIN, so only its shape is logged.
+error_log("HOLD: request received: " . request_shape_for_log($input));
 
 // ============================================================
 // WHO IS CALLING - REQUIRED FOR EVERY ACTION, BEFORE ANYTHING ELSE
@@ -46,11 +42,16 @@ error_log("HOLD: request received: action=" . (is_string($input['action'] ?? nul
 // while checking all end here, before the database is touched.
 $callerCheck = verify_signed_caller($input);
 if (!$callerCheck['verified']) {
-    error_log("HOLD: REFUSED - " . $callerCheck['message'] . " (claimed requester: " . $callerCheck['requester'] . ")");
-    http_response_code(401);
+    // A good signature from a certificate that is not on HOLD_ALLOWED_SIGNERS gets 403 and is
+    // told only that it is not allowed; anything else that fails gets 401.
+    $notAllowed = $callerCheck['not_allowed'];
+    error_log("HOLD: REFUSED - " . $callerCheck['message']
+        . ($notAllowed ? " (signer: " . $callerCheck['signer'] . ")" : "")
+        . " (claimed requester: " . $callerCheck['requester'] . ")");
+    http_response_code($notAllowed ? 403 : 401);
     echo json_encode([
         "status" => "ERROR",
-        "error" => "UNAUTHORIZED",
+        "error" => $notAllowed ? "FORBIDDEN" : "UNAUTHORIZED",
         "hold_placed" => false,
         "released" => false,
         "debited" => false,
@@ -83,7 +84,9 @@ if (!$isPlaceAction && !$isReleaseAction && !$isDebitAction) {
 // VALIDATE REQUIRED FIELDS - different per action.
 // ============================================================
 if ($isPlaceAction) {
-    $required = ['action', 'amount', 'asset_type'];
+    // reference is required: without one each call made a new reference, so replaying a signed
+    // place reserved the money again.
+    $required = ['action', 'amount', 'asset_type', 'reference'];
     foreach ($required as $field) {
         if (empty($input[$field])) {
             echo json_encode([
@@ -93,6 +96,14 @@ if ($isPlaceAction) {
             ]);
             exit;
         }
+    }
+    if (!is_string($input['reference']) && !is_int($input['reference'])) {
+        echo json_encode([
+            "status" => "ERROR",
+            "hold_placed" => false,
+            "message" => "Invalid reference"
+        ]);
+        exit;
     }
     // A negative amount would lower held_balance and so free money that is held elsewhere.
     $rawAmount = $input['amount'];
@@ -118,7 +129,7 @@ if ($isPlaceAction) {
 $amount = (float)($input['amount'] ?? 0);
 $assetType = is_string($input['asset_type'] ?? 'ACCOUNT') ? strtoupper($input['asset_type'] ?? 'ACCOUNT') : '';
 $holdReason = $input['hold_reason'] ?? 'PENDING_SWAP';
-$holdReference = $input['reference'] ?? 'HOLD_' . uniqid();
+$holdReference = (string)($input['reference'] ?? '');
 $expiry = $input['expiry'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
 $requester = $input['requester'] ?? 'VOUCHMORPH';
 $destinationInstitution = $input['destination_institution'] ?? null;

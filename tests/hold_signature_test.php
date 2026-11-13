@@ -14,7 +14,9 @@
 // variables (it refuses any host other than localhost, and DROPS AND RECREATES the tables it
 // uses). It starts hold.php on local ports and checks, for place, release and debit, that an
 // unsigned or wrongly signed request changes nothing and a signed one works; that odd bodies, bad
-// amounts and replays change nothing; that no PIN, signature or certificate reaches the log; and
+// amounts, a place without a reference and replays change nothing; that HOLD_ALLOWED_SIGNERS,
+// on and off, decides who may call hold.php and notify_debit.php; that no PIN, signature or
+// certificate from either endpoint reaches the log; and
 // that requests at the same moment cannot over-reserve or act twice. For those, the test holds the
 // row lock itself and lets the requests go only once PostgreSQL shows all of them waiting for it,
 // so the result does not depend on timing. docs/SECURITY_NOTES.md ("Holds") shows how to start
@@ -88,6 +90,7 @@ function over_the_wire(array $request): array
 [$vmPem, $vmKey]         = make_cert('VOUCHMORPH-TEST', $caPem, $caKey, false);
 [$otherCaPem, $otherCaKey] = make_cert('Some Other CA (made up)', null, null, true);
 [$strangerPem, $strangerKey] = make_cert('STRANGER', $otherCaPem, $otherCaKey, false);
+[$memberPem, $memberKey] = make_cert('OTHER-BANK-TEST', $caPem, $caKey, false);   // same scheme CA, not VouchMorph
 [$selfPem, $selfKey]     = make_cert('SELF-SIGNED', null, null, false);
 
 putenv('VOUCHMORPH_CA_CERT_CONTENT=' . $caPem);
@@ -201,6 +204,59 @@ check('hold.php opens the database only after the check', $gate !== false && $db
 check('hold.php loads db.php exactly once', substr_count($src, 'db.php\'') === 1);
 $cmSrc = file_get_contents(__DIR__ . '/../backend/helpers/CertificateManager.php');
 check('CertificateManager does not log the signed body', strpos($cmSrc, 'VERIFYING JSON') === false);
+
+// WHO MAY CALL (HOLD_ALLOWED_SIGNERS), decided 13 November 2026: off unless the host sets it.
+putenv('HOLD_ALLOWED_SIGNERS');
+check('allow-list: not set means off', allowed_signers() === null);
+foreach (['empty' => '', 'only spaces and commas' => ' , ,'] as $name => $v) {
+    putenv("HOLD_ALLOWED_SIGNERS=$v");
+    check("allow-list: $name means off", allowed_signers() === null);
+}
+putenv('HOLD_ALLOWED_SIGNERS= OTHER-BANK-TEST , VOUCHMORPH-TEST ,');
+check('allow-list: names are trimmed, blanks dropped', allowed_signers() === ['OTHER-BANK-TEST', 'VOUCHMORPH-TEST']);
+check('certificate_common_names reads the CN', certificate_common_names($vmPem) === ['VOUCHMORPH-TEST']);
+check('certificate_common_names of garbage is empty', certificate_common_names('not a certificate') === [] && certificate_common_names(['x']) === []);
+
+$signedByMember = over_the_wire(vm_sign($place, $memberKey, $memberPem, 'OTHER-BANK'));
+putenv('HOLD_ALLOWED_SIGNERS');
+$r = verify_signed_caller($signedByMember);
+check('allow-list off: another scheme member is accepted (as before)', $r['verified'] === true && $r['signer'] === 'OTHER-BANK-TEST');
+check('allow-list off: signer_is_allowed allows anyone', signer_is_allowed($memberPem) && signer_is_allowed('garbage'));
+
+putenv('HOLD_ALLOWED_SIGNERS=VOUCHMORPH-TEST');
+$r = verify_signed_caller($reordered);
+check('allow-list on: VouchMorph on the list is accepted', $r['verified'] === true && $r['not_allowed'] === false);
+$r = verify_signed_caller($signedByMember);
+check('allow-list on: a member not on the list is refused as not allowed',
+    $r['verified'] === false && $r['not_allowed'] === true && $r['message'] === 'Caller not allowed' && $r['signer'] === 'OTHER-BANK-TEST');
+$r = verify_signed_caller(over_the_wire(vm_sign($place, $strangerKey, $strangerPem)));
+check('allow-list on: a certificate from another CA is still refused as unsigned (not "not allowed")', $r['verified'] === false && $r['not_allowed'] === false);
+$r = verify_signed_caller(over_the_wire(vm_sign($place, $strangerKey, $strangerPem, 'VOUCHMORPH')));
+check('allow-list on: claiming requester VOUCHMORPH does not help', $r['verified'] === false);
+check('allow-list on: unreadable certificate is not allowed', signer_is_allowed('garbage') === false && signer_is_allowed(null) === false);
+putenv('HOLD_ALLOWED_SIGNERS=vouchmorph-test');
+check('allow-list on: names are compared exactly (case matters)', verify_signed_caller($reordered)['not_allowed'] === true);
+putenv('HOLD_ALLOWED_SIGNERS');
+
+// What is logged about a body: names of fields, never values.
+$shape = request_shape_for_log(array_merge($signedPlace, ['pin' => '7319-MADE-UP-PIN', "bad\nkey" => 1]));
+check('request_shape_for_log: no values', strpos($shape, '7319-MADE-UP-PIN') === false && strpos($shape, $signedPlace['signature']) === false
+    && strpos($shape, 'BEGIN CERTIFICATE') === false && strpos($shape, '9000000001') === false, $shape);
+check('request_shape_for_log: field names and action, one line', strpos($shape, 'action=PLACE_HOLD') === 0 && strpos($shape, 'pin') !== false && strpos($shape, "\n") === false, $shape);
+check('request_shape_for_log: non-object body', request_shape_for_log('x') === 'body=(not a JSON object)');
+
+// Both endpoints use the same check, before their first database query.
+check('hold.php requires a reference on place', strpos($src, "\$required = ['action', 'amount', 'asset_type', 'reference'];") !== false);
+check('hold.php no longer invents a reference', strpos($src, 'uniqid') === false);
+$ndSrc = file_get_contents(__DIR__ . '/../backend/api/v1/notify_debit.php');
+$ndAllow = strpos($ndSrc, 'signer_is_allowed($input');
+$ndVerify = strpos($ndSrc, 'verifySignedRequest($input)');
+$ndFirstDb = strpos($ndSrc, '$pdo->');
+check('notify_debit.php uses the shared allow-list check after its signature check, before the database',
+    $ndAllow !== false && $ndVerify !== false && $ndFirstDb !== false && $ndVerify < $ndAllow && $ndAllow < $ndFirstDb);
+check('notify_debit.php no longer logs the body', strpos($ndSrc, 'json_encode($input') === false);
+check('the allow-list is read in one place only (signed_request.php)', strpos($src . $ndSrc, "getenv('HOLD_ALLOWED_SIGNERS')") === false
+    && substr_count(file_get_contents(__DIR__ . '/../backend/helpers/signed_request.php'), "getenv('HOLD_ALLOWED_SIGNERS')") === 1);
 check('hold.php has no class_exists() guard around the check', strpos($src, 'class_exists') === false);
 check('CertificateManager class is found', class_exists('CertificateManager'));
 
@@ -232,11 +288,19 @@ if (getenv('HOLD_E2E') === '1') {
         CREATE TABLE cards (card_id BIGSERIAL PRIMARY KEY, account_id BIGINT, card_number TEXT, status TEXT, is_frozen BOOLEAN);
         CREATE TABLE financial_holds (id BIGSERIAL PRIMARY KEY, account_id BIGINT, wallet_id BIGINT, amount NUMERIC(20,4),
             hold_reference TEXT UNIQUE NOT NULL, session_id TEXT, status TEXT, expires_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT NOW(), asset_type TEXT, requester TEXT, foreign_bank TEXT);
+            created_at TIMESTAMP DEFAULT NOW(), asset_type TEXT, requester TEXT, foreign_bank TEXT,
+            cashout_confirmed BOOLEAN DEFAULT FALSE, debited_by TEXT, signature_verified SMALLINT);
+        -- what notify_debit.php writes to
+        DROP TABLE IF EXISTS settlements, ledger_entries CASCADE;
+        CREATE TABLE settlements (settlement_id BIGSERIAL PRIMARY KEY, settlement_ref TEXT, type TEXT, amount NUMERIC(20,4),
+            issuer_bank TEXT, status TEXT, created_at TIMESTAMP DEFAULT NOW());
+        CREATE TABLE ledger_entries (id BIGSERIAL PRIMARY KEY, reference TEXT, debit_account TEXT, credit_account TEXT,
+            amount NUMERIC(20,4), currency TEXT, notes TEXT, created_at TIMESTAMP DEFAULT NOW());
         INSERT INTO users (full_name, email, kyc_status) VALUES ('Test Person (made up)', 'person@example.test', 'approved');
         INSERT INTO accounts (user_id, account_number, account_type, currency, balance) VALUES
             (1, '9000000001', 'savings', 'BWP', 1000), (1, '9000000002', 'savings', 'BWP', 100),
-            (1, '9000000003', 'savings', 'BWP', 500), (1, '9000000004', 'savings', 'BWP', 500);
+            (1, '9000000003', 'savings', 'BWP', 500), (1, '9000000004', 'savings', 'BWP', 500),
+            (1, '9000000005', 'savings', 'BWP', 500), (1, '111111111', 'settlement', 'BWP', 0);
     ");
 
     [$bankPem, $bankKey] = make_cert('SACCUSSALIS-TEST', $caPem, $caKey, false);
@@ -252,20 +316,38 @@ if (getenv('HOLD_E2E') === '1') {
     // One single-process server per address. The built-in server can take two connections and
     // serve them one after the other, so requests meant to run at the same moment each get a
     // server of their own (index 0 is the one used for everything else).
+    // Two more run with the allow-list on: one where VouchMorph is not on it, one where it is.
     $basePort = 18000 + random_int(0, 900);
-    $urls = [];
-    for ($n = 0; $n < 9; $n++) {
+    $servers = [];
+    $serverEnvs = array_merge(array_fill(0, 9, $env), [
+        9  => array_merge($env, ['HOLD_ALLOWED_SIGNERS' => 'OTHER-BANK-TEST']),
+        10 => array_merge($env, ['HOLD_ALLOWED_SIGNERS' => ' SOMEONE-ELSE , VOUCHMORPH-TEST ']),
+    ]);
+    foreach ($serverEnvs as $n => $serverEnv) {
         $p = $basePort + $n;
         $proc = proc_open(
             [PHP_BINARY, '-S', "127.0.0.1:$p", '-t', dirname(__DIR__), dirname(__DIR__) . '/router.php'],
             [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']],
-            $pipes, dirname(__DIR__), $env
+            $pipes, dirname(__DIR__), $serverEnv
         );
         register_shutdown_function(static function () use ($proc) { proc_terminate($proc); });
-        $urls[] = "http://127.0.0.1:$p/backend/api/v1/hold.php";
+        $servers[$n] = "http://127.0.0.1:$p";
         for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', $p); $i++) usleep(100000);
     }
+    $urls = array_map(static fn($base) => "$base/backend/api/v1/hold.php", array_slice($servers, 0, 9));
     $url = $urls[0];
+    $listVmOff = $servers[9];   // HOLD_ALLOWED_SIGNERS=OTHER-BANK-TEST
+    $listVmOn  = $servers[10];  // HOLD_ALLOWED_SIGNERS=" SOMEONE-ELSE , VOUCHMORPH-TEST "
+
+    // POST a body to an endpoint on a given server.
+    $postTo = static function (string $base, string $endpoint, array $body): array {
+        $ch = curl_init("$base/backend/api/v1/$endpoint");
+        curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_SLASHES)]);
+        $raw = curl_exec($ch);
+        return [curl_getinfo($ch, CURLINFO_HTTP_CODE), json_decode((string)$raw, true) ?? ['_raw' => $raw]];
+    };
 
     $post = static function (array $body) use ($url): array {
         $ch = curl_init($url);
@@ -286,6 +368,8 @@ if (getenv('HOLD_E2E') === '1') {
         return json_encode([
             $pdo->query("SELECT account_number, balance, held_balance FROM accounts ORDER BY account_id")->fetchAll(),
             $pdo->query("SELECT hold_reference, status, amount FROM financial_holds ORDER BY id")->fetchAll(),
+            $pdo->query("SELECT count(*) AS settlements FROM settlements")->fetchAll(),
+            $pdo->query("SELECT count(*) AS ledger FROM ledger_entries")->fetchAll(),
         ]);
     };
     $acct = static function (string $n) use ($pdo): array {
@@ -506,6 +590,83 @@ if (getenv('HOLD_E2E') === '1') {
     check('same debit twice at once: both were waiting at the same moment', $together);
     check('same debit twice at once: debited once', $count($res, 'debited') === 1 && $acct('9000000004') == ['balance' => $balanceBefore - 80.0, 'held' => 0.0], json_encode($acct('9000000004')));
 
+    // PLACE WITHOUT A REFERENCE (decided 13 November 2026): refused, nothing changes, so a
+    // replayed place can no longer reserve the money again.
+    foreach (['missing' => null, 'empty' => '', 'not text' => ['x']] as $name => $ref) {
+        $body = $placeFor('unused', 20.0, '9000000005');
+        if ($ref === null) { unset($body['reference']); } else { $body['reference'] = $ref; }
+        $signed = vm_sign($body, $vmKey, $vmPem);
+        $before = $state();
+        [$code, $res] = $post($signed);
+        check("place, signed, reference $name: refused", ($res['hold_placed'] ?? null) === false && ($res['status'] ?? '') === 'ERROR', json_encode($res));
+        [, $again] = $post($signed);
+        check("place, signed, reference $name: nothing changed, also when sent again", $state() === $before && ($again['hold_placed'] ?? null) === false);
+    }
+
+    // WHO MAY CALL hold.php (HOLD_ALLOWED_SIGNERS, decided 13 November 2026).
+    $notAllowed = static fn(array $r, int $code) => $code === 403 && ($r['status'] ?? '') === 'ERROR'
+        && ($r['error'] ?? '') === 'FORBIDDEN' && ($r['message'] ?? '') === 'Caller not allowed';
+    // Off (not set): another scheme member may place and release, as before.
+    [$code, $res] = $postTo($servers[0], 'hold.php', vm_sign($placeFor('HOLD_E2E_MEMBER_OFF', 10.0, '9000000005'), $memberKey, $memberPem, 'OTHER-BANK'));
+    check('allow-list off, hold.php: another scheme member places a hold (as before)', ($res['hold_placed'] ?? false) === true, json_encode($res));
+    [$code, $res] = $postTo($servers[0], 'hold.php', vm_sign(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_MEMBER_OFF'], $memberKey, $memberPem, 'OTHER-BANK'));
+    check('allow-list off, hold.php: and releases it', ($res['released'] ?? false) === true, json_encode($res));
+    // On, VouchMorph not on it: every action from VouchMorph is refused and changes nothing.
+    $post(vm_sign($placeFor('HOLD_E2E_LISTED', 25.0, '9000000005'), $vmKey, $vmPem));
+    foreach ([
+        'place'   => $placeFor('HOLD_E2E_NOT_LISTED', 25.0, '9000000005'),
+        'release' => ['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_LISTED'],
+        'debit'   => ['action' => 'DEBIT_FUNDS', 'hold_reference' => 'HOLD_E2E_LISTED'],
+    ] as $what => $body) {
+        $before = $state();
+        [$code, $res] = $postTo($listVmOff, 'hold.php', vm_sign($body, $vmKey, $vmPem));
+        check("allow-list on without VouchMorph, hold.php $what: 403 not allowed", $notAllowed($res, $code), "HTTP $code " . json_encode($res));
+        check("allow-list on without VouchMorph, hold.php $what: says only that it is not allowed",
+            !isset($res['hold_reference']) && !isset($res['amount']) && strpos(json_encode($res), 'OTHER-BANK-TEST') === false);
+        check("allow-list on without VouchMorph, hold.php $what: nothing changed", $state() === $before);
+    }
+    [$code, $res] = $postTo($listVmOff, 'hold.php', $placeFor('HOLD_E2E_NOT_LISTED', 25.0, '9000000005'));
+    check('allow-list on, hold.php unsigned: still 401, not 403', $code === 401 && ($res['error'] ?? '') === 'UNAUTHORIZED');
+    [$code, $res] = $postTo($listVmOff, 'hold.php', vm_sign($placeFor('HOLD_E2E_MEMBER_ON', 5.0, '9000000005'), $memberKey, $memberPem, 'OTHER-BANK'));
+    check('allow-list on, hold.php: the listed member is accepted', ($res['hold_placed'] ?? false) === true, json_encode($res));
+    // On, VouchMorph on it (names trimmed): VouchMorph works, the other member is refused.
+    [$code, $res] = $postTo($listVmOn, 'hold.php', vm_sign(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_LISTED'], $vmKey, $vmPem));
+    check('allow-list on with VouchMorph, hold.php: VouchMorph releases', $code === 200 && ($res['released'] ?? false) === true, json_encode($res));
+    $before = $state();
+    [$code, $res] = $postTo($listVmOn, 'hold.php', vm_sign(['action' => 'RELEASE_HOLD', 'hold_reference' => 'HOLD_E2E_MEMBER_ON'], $memberKey, $memberPem, 'OTHER-BANK'));
+    check('allow-list on with VouchMorph, hold.php: the other member is 403 and nothing changed', $notAllowed($res, $code) && $state() === $before, json_encode($res));
+
+    // notify_debit.php: the same check; for a correctly signed, allowed request nothing else changed.
+    $nd = static fn(string $ref, float $amt) => ['hold_reference' => $ref, 'amount' => $amt,
+        'transaction_reference' => "TX_$ref", 'source_institution' => 'SACCUSSALIS'];
+    $post(vm_sign($placeFor('HOLD_E2E_ND_1', 30.0, '9000000005'), $vmKey, $vmPem));
+    $post(vm_sign($placeFor('HOLD_E2E_ND_2', 40.0, '9000000005'), $vmKey, $vmPem));
+    $before = $state();
+    [$code, $res] = $postTo($servers[0], 'notify_debit.php', $nd('HOLD_E2E_ND_1', 30.0));
+    check('notify_debit.php unsigned: refused, nothing changed', ($res['debited'] ?? null) === false && $state() === $before, json_encode($res));
+    [$code, $res] = $postTo($listVmOff, 'notify_debit.php', vm_sign($nd('HOLD_E2E_ND_1', 30.0), $vmKey, $vmPem));
+    check('allow-list on without VouchMorph, notify_debit.php: 403 not allowed',
+        $code === 403 && ($res['debited'] ?? null) === false && ($res['message'] ?? '') === 'Caller not allowed', "HTTP $code " . json_encode($res));
+    check('allow-list on without VouchMorph, notify_debit.php: nothing changed', $state() === $before);
+    $a5 = $acct('9000000005');
+    [$code, $res] = $postTo($servers[0], 'notify_debit.php', vm_sign($nd('HOLD_E2E_ND_1', 30.0), $vmKey, $vmPem));
+    check('allow-list off, notify_debit.php: debited (as before)', $code === 200 && ($res['debited'] ?? false) === true
+        && !empty($res['signature']) && ($res['hold_reference'] ?? '') === 'HOLD_E2E_ND_1', json_encode($res));
+    check('allow-list off, notify_debit.php: 30 left the account, settlement credited',
+        $acct('9000000005') == ['balance' => $a5['balance'] - 30.0, 'held' => $a5['held'] - 30.0] && $acct('111111111')['balance'] == 30.0
+        && $holdStatus('HOLD_E2E_ND_1') === 'DEBITED');
+    $before = $state();
+    [$code, $res] = $postTo($listVmOn, 'notify_debit.php', vm_sign($nd('HOLD_E2E_ND_2', 40.0), $memberKey, $memberPem, 'OTHER-BANK'));
+    check('allow-list on with VouchMorph, notify_debit.php: the other member is 403, nothing changed',
+        $code === 403 && ($res['message'] ?? '') === 'Caller not allowed' && $state() === $before, json_encode($res));
+    $ndPin = $nd('HOLD_E2E_ND_2', 40.0) + ['pin' => '5824-MADE-UP-PIN'];
+    $ndSigned = vm_sign($ndPin, $vmKey, $vmPem);
+    [$code, $res] = $postTo($listVmOn, 'notify_debit.php', $ndSigned);
+    check('allow-list on with VouchMorph, notify_debit.php: debited', $code === 200 && ($res['debited'] ?? false) === true
+        && $holdStatus('HOLD_E2E_ND_2') === 'DEBITED' && $acct('111111111')['balance'] == 70.0, json_encode($res));
+    // A failing call, so the error path's logging is exercised too.
+    $postTo($servers[0], 'notify_debit.php', vm_sign($nd('HOLD_E2E_ND_2', 40.0) + ['pin' => '5824-MADE-UP-PIN'], $vmKey, $vmPem));
+
     // NOTHING SECRET IN THE LOG: a made-up PIN, the request signature and certificates.
     $pinBody = $placeFor('HOLD_E2E_LOG', 5.0, '9000000003');
     $pinBody['pin'] = '7319-MADE-UP-PIN';
@@ -515,8 +676,10 @@ if (getenv('HOLD_E2E') === '1') {
     usleep(300000);
     $logText = (string)file_get_contents($log);
     check('log: has entries from hold.php (the scan below is meaningful)', strpos($logText, 'HOLD: request received') !== false);
-    check('log: no PIN', strpos($logText, '7319-MADE-UP-PIN') === false);
-    check('log: no request signature', strpos($logText, $pinSigned['signature']) === false
+    check('log: has entries from notify_debit.php (the scan below covers it too)', strpos($logText, 'NOTIFY_DEBIT.PHP RECEIVED') !== false
+        && strpos($logText, 'notify_debit.php ERROR') !== false);
+    check('log: no PIN', strpos($logText, '7319-MADE-UP-PIN') === false && strpos($logText, '5824-MADE-UP-PIN') === false);
+    check('log: no request signature', strpos($logText, $pinSigned['signature']) === false && strpos($logText, $ndSigned['signature']) === false
         && strpos($logText, base64_encode('forged-for-the-log-test')) === false);
     check('log: no certificate or key', strpos($logText, 'BEGIN CERTIFICATE') === false && strpos($logText, 'PRIVATE KEY') === false);
 } else {

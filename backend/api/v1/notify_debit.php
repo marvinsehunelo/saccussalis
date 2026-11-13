@@ -4,14 +4,16 @@
 require_once __DIR__ . '/../../db.php';
 require_once __DIR__ . '/../../helpers/crypto.php';
 require_once __DIR__ . '/../../helpers/CertificateManager.php';
+require_once __DIR__ . '/../../helpers/signed_request.php';
 
 header('Content-Type: application/json');
 
 try {
     $input = json_decode(file_get_contents('php://input'), true);
     
-    error_log("=== SACCUSSALIS NOTIFY_DEBIT.PHP RECEIVED ===");
-    error_log(json_encode($input));
+    // Only the shape of the body is logged: it carries a certificate and a signature, and can
+    // carry a PIN.
+    error_log("=== SACCUSSALIS NOTIFY_DEBIT.PHP RECEIVED === " . request_shape_for_log($input));
 
     // ============================================================
     // CERTIFICATE-BASED VERIFICATION (REQUIRED)
@@ -45,7 +47,20 @@ try {
         exit;
     }
     
-    error_log("SACCUSSALIS NOTIFY_DEBIT: Request verified from {$requester} using certificate");
+    // Who may call: the same check as hold.php (HOLD_ALLOWED_SIGNERS; off when not set).
+    $signer = log_safe(implode(',', certificate_common_names($input['certificate'])), 128);
+    if (!signer_is_allowed($input['certificate'])) {
+        error_log("SACCUSSALIS NOTIFY_DEBIT: REFUSED - Caller not allowed (signer: {$signer})");
+        http_response_code(403);
+        echo json_encode([
+            'status' => 'ERROR',
+            'debited' => false,
+            'message' => 'Caller not allowed'
+        ]);
+        exit;
+    }
+
+    error_log("SACCUSSALIS NOTIFY_DEBIT: Request verified from {$requester} using certificate (signer: {$signer})");
 
     // ============================================================
     // PROCESS DEBIT
@@ -296,7 +311,7 @@ try {
         $pdo->rollBack();
     }
     error_log("SACCUSSALIS notify_debit.php ERROR: " . $e->getMessage());
-    error_log("SACCUSSALIS notify_debit.php Input: " . json_encode($input ?? []));
+    error_log("SACCUSSALIS notify_debit.php Input: " . request_shape_for_log($input ?? null));
     
     http_response_code(400);
     echo json_encode([

@@ -13,27 +13,94 @@
 require_once __DIR__ . '/CertificateManager.php';
 
 /**
+ * The certificate names allowed to call, from HOLD_ALLOWED_SIGNERS (comma-separated common
+ * names, compared exactly after trimming spaces). null means the limit is off: the variable is
+ * not set, or holds nothing but spaces and commas. Then any certificate the scheme CA issued may
+ * call, as before.
+ *
+ * @return string[]|null
+ */
+function allowed_signers(): ?array
+{
+    $raw = getenv('HOLD_ALLOWED_SIGNERS');
+    if (!is_string($raw)) {
+        return null;
+    }
+    $names = array_values(array_filter(array_map('trim', explode(',', $raw)), static fn($n) => $n !== ''));
+    return $names === [] ? null : $names;
+}
+
+/** The common names in a certificate's subject (usually one), or [] when it cannot be read. */
+function certificate_common_names($certificatePem): array
+{
+    if (!is_string($certificatePem) || $certificatePem === '') {
+        return [];
+    }
+    $parsed = @openssl_x509_parse($certificatePem);
+    $cn = is_array($parsed) ? ($parsed['subject']['CN'] ?? null) : null;
+    if (is_string($cn)) {
+        return [$cn];
+    }
+    return is_array($cn) ? array_values(array_filter($cn, 'is_string')) : [];
+}
+
+/**
+ * The one check, shared by hold.php and notify_debit.php, of who may call once the signature is
+ * known to be good. With the limit off it allows every signer. With it on, the certificate must
+ * carry exactly one common name and that name must be on the list.
+ */
+function signer_is_allowed($certificatePem): bool
+{
+    $allowed = allowed_signers();
+    if ($allowed === null) {
+        return true;
+    }
+    $names = certificate_common_names($certificatePem);
+    return count($names) === 1 && in_array($names[0], $allowed, true);
+}
+
+/** Text from a caller, cut down so it is safe to write to a log. */
+function log_safe($value, int $max): string
+{
+    return substr(preg_replace('/[^\x20-\x7E]/', '?', is_scalar($value) ? (string)$value : ''), 0, $max);
+}
+
+/**
+ * What may be logged about a request body: its action and the names of its fields, never the
+ * values (the body can carry a PIN, a certificate and a signature).
+ */
+function request_shape_for_log($input): string
+{
+    if (!is_array($input)) {
+        return 'body=(not a JSON object)';
+    }
+    $action = is_string($input['action'] ?? null) ? log_safe($input['action'], 32) : '(none)';
+    return 'action=' . $action . ', fields=' . log_safe(implode(',', array_map('strval', array_keys($input))), 300);
+}
+
+/**
  * What the signature covers: every field of the body except `signature`, `certificate` and
  * `requester`, top-level keys sorted, JSON-encoded as VouchMorph does. So `requester` is a
  * claim, not proof; `signer` (the certificate's subject) is who really signed.
  *
  * @param mixed $input  the decoded request body
- * @return array{verified: bool, requester: string, signer: string, message: string}
+ * A correctly signed request whose certificate is not on HOLD_ALLOWED_SIGNERS (when that is
+ * set) comes back with verified = false and not_allowed = true.
+ *
+ * @return array{verified: bool, not_allowed: bool, requester: string, signer: string, message: string}
  */
 function verify_signed_caller($input, ?CertificateManager $certManager = null): array
 {
-    $refuse = static function (string $message, string $requester = 'UNKNOWN'): array {
-        return ['verified' => false, 'requester' => $requester, 'signer' => '', 'message' => $message];
+    $refuse = static function (string $message, string $requester = 'UNKNOWN', bool $notAllowed = false, string $signer = ''): array {
+        return ['verified' => false, 'not_allowed' => $notAllowed, 'requester' => $requester, 'signer' => $signer, 'message' => $message];
     };
 
     if (!is_array($input)) {
         return $refuse('Signed JSON body required');
     }
 
-    // Made safe to write to a log: printable ASCII only, at most 64 characters.
-    $requester = (isset($input['requester']) && is_string($input['requester']))
-        ? substr(preg_replace('/[^\x20-\x7E]/', '?', $input['requester']), 0, 64)
-        : 'UNKNOWN';
+    // A label, not proof (the signature does not cover it); made safe to write to a log.
+    $requester = (isset($input['requester']) && is_string($input['requester'])) ? log_safe($input['requester'], 64) : 'UNKNOWN';
 
     if (empty($input['certificate']) || !is_string($input['certificate'])) {
         return $refuse('Certificate required', $requester);
@@ -55,10 +122,11 @@ function verify_signed_caller($input, ?CertificateManager $certManager = null): 
         return $refuse('Certificate verification failed: ' . $reason, $requester);
     }
 
-    $parsed = @openssl_x509_parse($input['certificate']);
-    $cn = is_array($parsed) ? ($parsed['subject']['CN'] ?? $parsed['name'] ?? '') : '';
-    $signer = is_array($cn) ? implode(',', $cn) : (string)$cn;
-    $signer = substr(preg_replace('/[^\x20-\x7E]/', '?', $signer), 0, 128);
+    $signer = log_safe(implode(',', certificate_common_names($input['certificate'])), 128);
 
-    return ['verified' => true, 'requester' => $requester, 'signer' => $signer, 'message' => 'Signature verified'];
+    if (!signer_is_allowed($input['certificate'])) {
+        return $refuse('Caller not allowed', $requester, true, $signer);
+    }
+
+    return ['verified' => true, 'not_allowed' => false, 'requester' => $requester, 'signer' => $signer, 'message' => 'Signature verified'];
 }
