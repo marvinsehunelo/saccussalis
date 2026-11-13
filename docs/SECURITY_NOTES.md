@@ -54,6 +54,18 @@ What the signature covers, and what it does not:
   duplicate (`hold_reference` is unique). A signed place **without** a `reference` gets a new
   reference each time, so a replay of it reserves the money again (until released or expired).
 
+What VouchMorph sends today (checked against its real bank client, with a throwaway CA and key):
+
+- Placing a hold the way the swap engine does it (`placeHoldSigned`): accepted.
+- Release (`releaseHold`, action `RELEASE_HOLD`, to `hold.php`): accepted.
+- Debit goes to `notify_debit.php`, not `hold.php` (`debitFunds`): accepted there by the same check.
+- Refused, and not used against `hold.php` by the swap engine today: `GenericBankClient::placeHold()`
+  called directly (it puts the certificate into the body before signing, so it signs different
+  bytes from the ones checked here; only `authorize()` reaches it), and `reverse()` /
+  `reverseTransaction()`, which sends unsigned. Either one would get 401 if it were wired up.
+- VouchMorph signs only when its own key and certificate are configured; without them it sends
+  unsigned and every call is refused.
+
 Other rules on this endpoint:
 
 - Place refuses an amount that is not a number greater than zero (a negative amount used to lower
