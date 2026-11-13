@@ -5,17 +5,20 @@
  * 
  * FIXED: Only sets account_id OR wallet_id based on asset_type, never both
  * UPDATED: Added CARD support for holds (cards link to accounts)
+ * SECURITY: every action (place, release, debit) needs a request signed with a certificate
+ *           issued by the VouchMorph CA, and on the HOLD_ALLOWED_SIGNERS list when that is set.
+ *           The check runs before anything is read or changed. A place needs a reference.
  */
 
-require_once __DIR__ . '/../../db.php';
+// db.php is loaded only after the caller is verified (below), so an unsigned request does not
+// even open a database connection.
 require_once __DIR__ . '/../../helpers/crypto.php';
+require_once __DIR__ . '/../../helpers/signed_request.php';
 
 header("Content-Type: application/json");
 
-error_log("=== HOLD.PHP RECEIVED ===" . json_encode($_POST));
-
 $input = json_decode(file_get_contents("php://input"), true);
-if (!$input) {
+if (!is_array($input) || !$input) {
     $input = $_POST;
 }
 
@@ -28,9 +31,41 @@ if (empty($input)) {
     exit;
 }
 
-error_log("HOLD: Input received: " . json_encode($input));
+// The body can carry a certificate and a customer's PIN, so only its shape is logged.
+error_log("HOLD: request received: " . request_shape_for_log($input));
 
-$action = strtoupper(trim($input['action'] ?? 'PLACE_HOLD'));
+// ============================================================
+// WHO IS CALLING - REQUIRED FOR EVERY ACTION, BEFORE ANYTHING ELSE
+// ============================================================
+// Same certificate check as notify_debit.php. It fails closed: no certificate, no signature,
+// a certificate the CA did not issue, a signature that does not match the body, or an error
+// while checking all end here, before the database is touched.
+$callerCheck = verify_signed_caller($input);
+if (!$callerCheck['verified']) {
+    // A good signature from a certificate that is not on HOLD_ALLOWED_SIGNERS gets 403 and is
+    // told only that it is not allowed; anything else that fails gets 401.
+    $notAllowed = $callerCheck['not_allowed'];
+    error_log("HOLD: REFUSED - " . $callerCheck['message']
+        . ($notAllowed ? " (signer: " . $callerCheck['signer'] . ")" : "")
+        . " (claimed requester: " . $callerCheck['requester'] . ")");
+    http_response_code($notAllowed ? 403 : 401);
+    echo json_encode([
+        "status" => "ERROR",
+        "error" => $notAllowed ? "FORBIDDEN" : "UNAUTHORIZED",
+        "hold_placed" => false,
+        "released" => false,
+        "debited" => false,
+        "message" => $callerCheck['message']
+    ]);
+    exit;
+}
+error_log("HOLD: request verified by certificate (signer: " . $callerCheck['signer']
+    . ", claimed requester: " . $callerCheck['requester'] . ")");
+
+require_once __DIR__ . '/../../db.php';
+
+$rawAction = $input['action'] ?? 'PLACE_HOLD';
+$action = is_string($rawAction) ? strtoupper(trim($rawAction)) : '';
 $isPlaceAction = in_array($action, ['HOLD', 'PLACE', 'PLACE_HOLD']);
 $isReleaseAction = in_array($action, ['RELEASE', 'RELEASE_HOLD', 'UNHOLD']);
 $isDebitAction = in_array($action, ['DEBIT', 'DEBIT_HOLD', 'DEBIT_FUNDS']);
@@ -49,7 +84,9 @@ if (!$isPlaceAction && !$isReleaseAction && !$isDebitAction) {
 // VALIDATE REQUIRED FIELDS - different per action.
 // ============================================================
 if ($isPlaceAction) {
-    $required = ['action', 'amount', 'asset_type'];
+    // reference is required: without one each call made a new reference, so replaying a signed
+    // place reserved the money again.
+    $required = ['action', 'amount', 'asset_type', 'reference'];
     foreach ($required as $field) {
         if (empty($input[$field])) {
             echo json_encode([
@@ -59,6 +96,24 @@ if ($isPlaceAction) {
             ]);
             exit;
         }
+    }
+    if (!is_string($input['reference']) && !is_int($input['reference'])) {
+        echo json_encode([
+            "status" => "ERROR",
+            "hold_placed" => false,
+            "message" => "Invalid reference"
+        ]);
+        exit;
+    }
+    // A negative amount would lower held_balance and so free money that is held elsewhere.
+    $rawAmount = $input['amount'];
+    if (!is_numeric($rawAmount) || !is_finite((float)$rawAmount) || (float)$rawAmount <= 0) {
+        echo json_encode([
+            "status" => "ERROR",
+            "hold_placed" => false,
+            "message" => "Invalid amount: must be a number greater than zero"
+        ]);
+        exit;
     }
 } else {
     $targetHoldReference = $input['hold_reference'] ?? $input['reference'] ?? null;
@@ -72,9 +127,9 @@ if ($isPlaceAction) {
 }
 
 $amount = (float)($input['amount'] ?? 0);
-$assetType = strtoupper($input['asset_type'] ?? 'ACCOUNT');
+$assetType = is_string($input['asset_type'] ?? 'ACCOUNT') ? strtoupper($input['asset_type'] ?? 'ACCOUNT') : '';
 $holdReason = $input['hold_reason'] ?? 'PENDING_SWAP';
-$holdReference = $input['reference'] ?? 'HOLD_' . uniqid();
+$holdReference = (string)($input['reference'] ?? '');
 $expiry = $input['expiry'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
 $requester = $input['requester'] ?? 'VOUCHMORPH';
 $destinationInstitution = $input['destination_institution'] ?? null;
@@ -315,29 +370,6 @@ try {
 
     error_log("HOLD: assetType={$assetType}, identifier={$identifier}, amount={$amount}, action={$action}");
 
-    if (isset($input['certificate']) && !empty($input['certificate'])) {
-        try {
-            if (class_exists('Infrastructure\Crypto\CertificateManager')) {
-                $certManager = new CertificateManager('SACCUSSALIS');
-                $verification = $certManager->verifySignedRequest($input);
-                if (!$verification['valid']) {
-                    error_log("HOLD: Certificate verification FAILED: " . ($verification['message'] ?? 'Unknown error'));
-                    echo json_encode([
-                        "status" => "ERROR",
-                        "hold_placed" => false,
-                        "message" => "Certificate verification failed: " . ($verification['message'] ?? 'Invalid signature')
-                    ]);
-                    exit;
-                }
-                error_log("HOLD: Verified from " . ($verification['requester'] ?? 'unknown'));
-            } else {
-                error_log("HOLD: CertificateManager class not available, skipping verification");
-            }
-        } catch (Exception $e) {
-            error_log("HOLD: Certificate verification exception: " . $e->getMessage());
-        }
-    }
-
     $dupCheck = $pdo->prepare("SELECT 1 FROM financial_holds WHERE hold_reference = :ref LIMIT 1");
     $dupCheck->execute([':ref' => $holdReference]);
     if ($dupCheck->fetchColumn()) {
@@ -407,8 +439,20 @@ try {
                 UPDATE accounts
                 SET held_balance = COALESCE(held_balance, 0) + :amount
                 WHERE account_id = :account_id
+                  AND balance - COALESCE(held_balance, 0) >= :needed
             ");
-            $stmt->execute([':amount' => $amount, ':account_id' => $accountId]);
+            $stmt->execute([':amount' => $amount, ':needed' => $amount, ':account_id' => $accountId]);
+            // The check and the reservation are one statement, so two holds placed at the
+            // same moment cannot both pass on the balance read above.
+            if ($stmt->rowCount() === 0) {
+                $pdo->rollBack();
+                echo json_encode([
+                    "status" => "ERROR",
+                    "hold_placed" => false,
+                    "message" => "Insufficient balance. Required: {$amount}"
+                ]);
+                exit;
+            }
 
             error_log("Account held_balance updated: account_id={$accountId}, amount={$amount}");
 
@@ -517,8 +561,20 @@ try {
                 UPDATE wallets
                 SET held_balance = COALESCE(held_balance, 0) + :amount
                 WHERE wallet_id = :wallet_id
+                  AND balance - COALESCE(held_balance, 0) >= :needed
             ");
-            $stmt->execute([':amount' => $amount, ':wallet_id' => $walletId]);
+            $stmt->execute([':amount' => $amount, ':needed' => $amount, ':wallet_id' => $walletId]);
+            // The check and the reservation are one statement, so two holds placed at the
+            // same moment cannot both pass on the balance read above.
+            if ($stmt->rowCount() === 0) {
+                $pdo->rollBack();
+                echo json_encode([
+                    "status" => "ERROR",
+                    "hold_placed" => false,
+                    "message" => "Insufficient balance. Required: {$amount}"
+                ]);
+                exit;
+            }
 
             error_log("Wallet held_balance updated: wallet_id={$walletId}, amount={$amount}");
 
@@ -641,8 +697,20 @@ try {
                 UPDATE accounts
                 SET held_balance = COALESCE(held_balance, 0) + :amount
                 WHERE account_id = :account_id
+                  AND balance - COALESCE(held_balance, 0) >= :needed
             ");
-            $stmt->execute([':amount' => $amount, ':account_id' => $accountId]);
+            $stmt->execute([':amount' => $amount, ':needed' => $amount, ':account_id' => $accountId]);
+            // The check and the reservation are one statement, so two holds placed at the
+            // same moment cannot both pass on the balance read above.
+            if ($stmt->rowCount() === 0) {
+                $pdo->rollBack();
+                echo json_encode([
+                    "status" => "ERROR",
+                    "hold_placed" => false,
+                    "message" => "Insufficient balance. Required: {$amount}"
+                ]);
+                exit;
+            }
 
             error_log("Account held_balance updated via CARD: account_id={$accountId}, amount={$amount}");
 
